@@ -1,0 +1,16 @@
+name: Run Safe Web MVP
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Run Safe Web Script
+        run: python3 src/safe_web_mvp.py
