@@ -13,4 +13,6 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Run Safe Web Script
-        run: python3 safe_web_mvp.py
+        run: 
+           cd  backend 
+            python3 safe_web_mvp.py
