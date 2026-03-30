@@ -1,32 +1,47 @@
-# Safe Web Project
+📊 Example Output
+3 browsers tested
+25 trials per browser
+75 total observations
 
-## Overview
-This project evaluates the safety and performance of web browsers (Safari, Chrome, Firefox) across:
+The dashboard displays:
 
-- Privacy
-- Personal Safety
-- Sustainability
+average CPU usage
+average memory usage
+top-performing browser
+summary comparison table
+🧪 Methodology
 
-## Features (Alpha)
-- Runs search queries across multiple browsers
-- Measures CPU and memory usage
-- Stores results in CSV format
-- Supports simulation mode for restricted environments
+The system uses a repeated trial approach:
 
-## How to Run
-python3 safe_web_mvp.py
+Each browser is tested 25 times
+Results are aggregated to reduce randomness
+Averages are used for comparison
 
-## Example Output
-Results are saved in:
-safe_web_results.csv
+This improves reliability and aligns with software performance evaluation practices.
 
-## Current Status (Alpha)
-- ~60% functionality implemented
-- Core testing pipeline working
-- Supports Safari, Chrome, Firefox
-- Simulation mode for consistent execution
+📌 Current Status (Alpha)
+~60–70% functionality implemented
+Core backend pipeline complete
+Frontend dashboard integrated
+Data visualization working
+Stable execution across multiple runs
+⚠️ Limitations
+Uses simulated/simplified performance metrics
+Limited to three browsers
+No real-time monitoring
+Visualization can be further enhanced
+🔮 Future Improvements
+Add additional search engines (Bing, DuckDuckGo)
+Expand metrics (load time, network usage)
+Add statistical analysis (variance, standard deviation)
+Implement filtering and advanced charts
+Integrate real-time browser monitoring
+Deploy as a web application
+👤 Author
 
-## Next Steps
-- Add more search engines (Bing, DuckDuckGo)
-- Compute averages and deviations
-- Store results in a database
+Boris Milev
+SENG 701 Software Engineering Capstone
+
+⭐ Project Status
+
+This project is currently in the Alpha stage, with core functionality implemented and validated.
