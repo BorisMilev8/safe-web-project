@@ -27,7 +27,7 @@ The system runs multiple trials per browser and aggregates results to provide re
 
 ## How to Run
 
-### Run Backend
+### Run Backend and Frontend
 
 ```bash
 cd backend
@@ -39,8 +39,4 @@ npm install
 npm run dev
 
 ### Open in browser
-http://localhost:5173
-
-
-
-
+http://localhost:5173    
