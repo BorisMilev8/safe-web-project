@@ -27,7 +27,6 @@ safe_web_results.csv
 - Simulation mode for consistent execution
 
 ## Next Steps
-- Add multiple trials (25+)
 - Add more search engines (Bing, DuckDuckGo)
 - Compute averages and deviations
 - Store results in a database
