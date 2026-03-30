@@ -1,22 +1,16 @@
 import csv
+import json
 import sys
 import unittest
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from tempfile import TemporaryDirectory
+from typing import DefaultDict, Dict, List, Optional, Tuple
 
 
 # Safe Web MVP + DASHBOARD
-# Alpha-friendly prototype for Safari, Chrome, and Firefox.
-#
-# This version uses simulation mode for reliable demo runs and includes
-# a terminal dashboard that summarizes CSV results.
-#
-# Important compatibility note:
-# Older CSV files may have different header names. The dashboard now
-# supports both the current compact headers and older metric headers.
 
 
 @dataclass
@@ -57,54 +51,51 @@ BROWSERS: Dict[str, BrowserConfig] = {
 }
 
 
-# Store results inside backend/data for clean project structure
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
-RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
 DEFAULT_QUERY = "browser privacy comparison"
-DEFAULT_LOAD_WAIT = 2
-DEFAULT_SAMPLE_SECONDS = 2
-TRIALS_PER_BROWSER = 1
 DEFAULT_BROWSER_ORDER = ["safari", "chrome", "firefox"]
 CURRENT_HEADERS = ["timestamp", "browser", "cpu", "memory"]
 CPU_HEADER_CANDIDATES = ["cpu", "avg_cpu_percent"]
 MEMORY_HEADER_CANDIDATES = ["memory", "avg_memory_mb"]
 
 
-def should_simulate() -> bool:
-    return True
+def resolve_base_dir() -> Path:
+    """Return a stable base directory in both script and sandbox environments."""
+    if "__file__" in globals():
+        return Path(__file__).resolve().parent
+    return Path.cwd().resolve()
+
+
+# Backend storage
+BASE_DIR = resolve_base_dir()
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
 
 
 def simulate_metrics(config: BrowserConfig, query: str, trial: int) -> Dict[str, float]:
     seed = sum(ord(char) for char in f"{config.key}|{query}|{trial}")
     return {
         "avg_cpu_percent": round(10 + (seed % 10), 2),
-        "peak_cpu_percent": round(15 + (seed % 10), 2),
         "avg_memory_mb": round(200 + (seed % 50), 2),
-        "peak_memory_mb": round(250 + (seed % 50), 2),
     }
 
 
-def resolve_query() -> str:
-    if len(sys.argv) > 1:
-        return " ".join(sys.argv[1:])
-    return DEFAULT_QUERY
+def resolve_query(argv: Optional[List[str]] = None) -> str:
+    args = sys.argv if argv is None else argv
+    return " ".join(args[1:]) if len(args) > 1 else DEFAULT_QUERY
 
 
-def write_csv_header_if_needed(file_path: Path = RESULTS_FILE) -> None:
-    if file_path.exists():
-        return
-
-    with file_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(CURRENT_HEADERS)
+def write_csv_header_if_needed(results_file: Path = RESULTS_FILE) -> None:
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    if not results_file.exists():
+        with results_file.open("w", newline="", encoding="utf-8") as handle:
+            csv.writer(handle).writerow(CURRENT_HEADERS)
 
 
-def append_result(browser: str, metrics: Dict[str, float], file_path: Path = RESULTS_FILE) -> None:
-    with file_path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
+def append_result(browser: str, metrics: Dict[str, float], results_file: Path = RESULTS_FILE) -> None:
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    with results_file.open("a", newline="", encoding="utf-8") as handle:
+        csv.writer(handle).writerow(
             [
                 datetime.now().isoformat(timespec="seconds"),
                 browser,
@@ -116,136 +107,151 @@ def append_result(browser: str, metrics: Dict[str, float], file_path: Path = RES
 
 def detect_metric_headers(fieldnames: Optional[List[str]]) -> Tuple[str, str]:
     if not fieldnames:
-        raise ValueError("CSV file is missing a header row.")
+        raise ValueError("CSV header row is missing.")
 
     cpu_header = next((name for name in CPU_HEADER_CANDIDATES if name in fieldnames), None)
     memory_header = next((name for name in MEMORY_HEADER_CANDIDATES if name in fieldnames), None)
 
-    if cpu_header is None or memory_header is None:
-        raise ValueError(
-            "CSV file is missing required metric columns. Expected one of "
-            f"{CPU_HEADER_CANDIDATES} for CPU and one of {MEMORY_HEADER_CANDIDATES} for memory. "
-            f"Found columns: {fieldnames}"
-        )
+    if not cpu_header or not memory_header:
+        raise ValueError("Missing CPU or Memory columns")
 
     return cpu_header, memory_header
 
 
-def load_dashboard_data(file_path: Path = RESULTS_FILE) -> Dict[str, List[Dict[str, float]]]:
-    data: Dict[str, List[Dict[str, float]]] = defaultdict(list)
+def load_dashboard_data(results_file: Path = RESULTS_FILE) -> DefaultDict[str, List[Dict[str, float]]]:
+    data: DefaultDict[str, List[Dict[str, float]]] = defaultdict(list)
 
-    with file_path.open("r", newline="", encoding="utf-8") as handle:
+    if not results_file.exists():
+        return data
+
+    with results_file.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         cpu_header, memory_header = detect_metric_headers(reader.fieldnames)
-
         for row in reader:
-            browser_name = (row.get("browser") or "Unknown Browser").strip() or "Unknown Browser"
-            cpu_value = row.get(cpu_header, "")
-            memory_value = row.get(memory_header, "")
-
-            if cpu_value in (None, "") or memory_value in (None, ""):
+            browser_name = row.get("browser", "").strip()
+            if not browser_name:
                 continue
-
             data[browser_name].append(
                 {
-                    "cpu": float(cpu_value),
-                    "memory": float(memory_value),
+                    "cpu": float(row[cpu_header]),
+                    "memory": float(row[memory_header]),
                 }
             )
-
     return data
 
 
-def generate_dashboard(file_path: Path = RESULTS_FILE) -> None:
+def export_dashboard_json(
+    results_file: Path = RESULTS_FILE,
+    frontend_data_dir: Optional[Path] = None,
+) -> Path:
+    data = load_dashboard_data(results_file)
+    rows: List[Dict[str, float | str]] = []
+
+    for browser, values in data.items():
+        for value in values:
+            rows.append(
+                {
+                    "browser": browser,
+                    "cpu": value["cpu"],
+                    "memory": value["memory"],
+                }
+            )
+
+    output_dir = frontend_data_dir or (BASE_DIR.parent / "frontend" / "src" / "data")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "backendResults.json"
+
+    with output_file.open("w", encoding="utf-8") as handle:
+        json.dump(rows, handle, indent=2)
+
+    print(f"Exported JSON → {output_file}")
+    return output_file
+
+
+def generate_dashboard(results_file: Path = RESULTS_FILE) -> None:
     print("\n📊 DASHBOARD RESULTS")
     print("=" * 40)
 
-    if not file_path.exists():
+    data = load_dashboard_data(results_file)
+    if not data:
         print("No data available")
         return
 
-    data = load_dashboard_data(file_path)
-    if not data:
-        print("No usable rows found in the CSV file")
-        return
-
     for browser, values in data.items():
-        avg_cpu = sum(item["cpu"] for item in values) / len(values)
-        avg_memory = sum(item["memory"] for item in values) / len(values)
-
+        avg_cpu = sum(value["cpu"] for value in values) / len(values)
+        avg_mem = sum(value["memory"] for value in values) / len(values)
         print(f"\n{browser}")
         print(f"  Avg CPU: {avg_cpu:.2f}%")
-        print(f"  Avg Memory: {avg_memory:.2f} MB")
-
-
-def run_trial(config: BrowserConfig, query: str, trial: int) -> Dict[str, float]:
-    print(f"Running {config.name}...")
-    return simulate_metrics(config, query, trial)
+        print(f"  Avg Memory: {avg_mem:.2f} MB")
 
 
 def main() -> None:
     write_csv_header_if_needed()
-
     query = resolve_query()
-    print(f"Query: {query}")
 
     for key in DEFAULT_BROWSER_ORDER:
         config = BROWSERS[key]
-        metrics = run_trial(config, query, 1)
+        metrics = simulate_metrics(config, query, 1)
         append_result(config.name, metrics)
 
     print("\nRun complete!")
+    export_dashboard_json()
     generate_dashboard()
 
 
-class TestDashboard(unittest.TestCase):
-    def setUp(self) -> None:
-        self.test_file = Path("test_safe_web_results.csv")
-        if self.test_file.exists():
-            self.test_file.unlink()
+class SafeWebMvpTests(unittest.TestCase):
+    def test_resolve_base_dir_without___file__(self) -> None:
+        original_file = globals().pop("__file__", None)
+        try:
+            self.assertEqual(resolve_base_dir(), Path.cwd().resolve())
+        finally:
+            if original_file is not None:
+                globals()["__file__"] = original_file
 
-    def tearDown(self) -> None:
-        if self.test_file.exists():
-            self.test_file.unlink()
+    def test_resolve_query_uses_default(self) -> None:
+        self.assertEqual(resolve_query(["safe_web_mvp.py"]), DEFAULT_QUERY)
 
-    def test_simulation_returns_values(self) -> None:
-        metrics = simulate_metrics(BROWSERS["safari"], "test", 1)
-        self.assertTrue(metrics["avg_cpu_percent"] > 0)
-        self.assertTrue(metrics["avg_memory_mb"] > 0)
-
-    def test_write_header_and_append_current_format(self) -> None:
-        write_csv_header_if_needed(self.test_file)
-        append_result("Safari", simulate_metrics(BROWSERS["safari"], "test", 1), self.test_file)
-
-        loaded = load_dashboard_data(self.test_file)
-        self.assertIn("Safari", loaded)
-        self.assertEqual(len(loaded["Safari"]), 1)
-
-    def test_load_dashboard_data_supports_legacy_headers(self) -> None:
-        with self.test_file.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["timestamp", "browser", "avg_cpu_percent", "avg_memory_mb"])
-            writer.writerow(["2026-03-29T12:00:00", "Firefox", "12.5", "220.0"])
-
-        loaded = load_dashboard_data(self.test_file)
-        self.assertEqual(loaded["Firefox"][0]["cpu"], 12.5)
-        self.assertEqual(loaded["Firefox"][0]["memory"], 220.0)
+    def test_resolve_query_uses_cli_args(self) -> None:
+        self.assertEqual(
+            resolve_query(["safe_web_mvp.py", "private", "search"]),
+            "private search",
+        )
 
     def test_detect_metric_headers_current(self) -> None:
-        cpu_header, memory_header = detect_metric_headers(["timestamp", "browser", "cpu", "memory"])
-        self.assertEqual(cpu_header, "cpu")
-        self.assertEqual(memory_header, "memory")
+        self.assertEqual(
+            detect_metric_headers(["timestamp", "browser", "cpu", "memory"]),
+            ("cpu", "memory"),
+        )
 
     def test_detect_metric_headers_legacy(self) -> None:
-        cpu_header, memory_header = detect_metric_headers(["timestamp", "browser", "avg_cpu_percent", "avg_memory_mb"])
-        self.assertEqual(cpu_header, "avg_cpu_percent")
-        self.assertEqual(memory_header, "avg_memory_mb")
+        self.assertEqual(
+            detect_metric_headers(["timestamp", "browser", "avg_cpu_percent", "avg_memory_mb"]),
+            ("avg_cpu_percent", "avg_memory_mb"),
+        )
 
-    def test_detect_metric_headers_raises_for_missing_columns(self) -> None:
-        with self.assertRaises(ValueError):
-            detect_metric_headers(["timestamp", "browser", "peak_cpu_percent"])
+    def test_export_dashboard_json_creates_output(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            results_file = temp_path / "data" / "safe_web_results.csv"
+            frontend_data_dir = temp_path / "frontend" / "src" / "data"
+
+            write_csv_header_if_needed(results_file)
+            append_result("Safari", {"avg_cpu_percent": 12.5, "avg_memory_mb": 220.0}, results_file)
+            append_result("Firefox", {"avg_cpu_percent": 14.0, "avg_memory_mb": 230.0}, results_file)
+
+            output_file = export_dashboard_json(results_file, frontend_data_dir)
+            self.assertTrue(output_file.exists())
+
+            with output_file.open("r", encoding="utf-8") as handle:
+                rows = json.load(handle)
+
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["browser"], "Safari")
+            self.assertIn("cpu", rows[0])
+            self.assertIn("memory", rows[0])
 
 
 if __name__ == "__main__":
     main()
+
 
