@@ -11,8 +11,9 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
-
-      - name: Run Safe Web Script
-        run: 
-           cd  backend 
-            python3 safe_web_mvp.py
+        
+        
+        - name: Run backend script
+  run: |
+    cd backend
+    python3 safe_web_mvp.py
