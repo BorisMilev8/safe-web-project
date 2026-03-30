@@ -53,6 +53,7 @@ BROWSERS: Dict[str, BrowserConfig] = {
 
 DEFAULT_QUERY = "browser privacy comparison"
 DEFAULT_BROWSER_ORDER = ["safari", "chrome", "firefox"]
+TRIALS_PER_BROWSER = 25  # 🔥 change this to 10 or 25 later
 CURRENT_HEADERS = ["timestamp", "browser", "cpu", "memory"]
 CPU_HEADER_CANDIDATES = ["cpu", "avg_cpu_percent"]
 MEMORY_HEADER_CANDIDATES = ["memory", "avg_memory_mb"]
@@ -191,8 +192,9 @@ def main() -> None:
 
     for key in DEFAULT_BROWSER_ORDER:
         config = BROWSERS[key]
-        metrics = simulate_metrics(config, query, 1)
-        append_result(config.name, metrics)
+        for trial in range(1, TRIALS_PER_BROWSER + 1):
+            metrics = simulate_metrics(config, query, trial)
+            append_result(config.name, metrics)
 
     print("\nRun complete!")
     export_dashboard_json()
@@ -253,5 +255,3 @@ class SafeWebMvpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     main()
-
-
