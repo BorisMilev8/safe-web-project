@@ -1,0 +1,20 @@
+def export_dashboard_json(file_path: Path = RESULTS_FILE) -> None:
+    data = load_dashboard_data(file_path)
+
+    export_rows = []
+    for browser, values in data.items():
+        for item in values:
+            export_rows.append(
+                {
+                    "browser": browser,
+                    "cpu": item["cpu"],
+                    "memory": item["memory"],
+                }
+            )
+
+    frontend_data_dir = BASE_DIR.parent / "frontend" / "src" / "data"
+    frontend_data_dir.mkdir(parents=True, exist_ok=True)
+    output_file = frontend_data_dir / "backendResults.json"
+
+    with output_file.open("w", encoding="utf-8") as handle:
+        json.dump(export_rows, handle, indent=2)
