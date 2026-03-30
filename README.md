@@ -1,47 +1,74 @@
-📊 Example Output
-3 browsers tested
-25 trials per browser
-75 total observations
+🛡️ Safe Web Project
+Overview
+
+This project evaluates the safety and performance of web browsers (Safari, Chrome, Firefox) based on:
+
+Privacy
+Personal Safety
+Sustainability (resource efficiency)
+System Performance (CPU and memory usage)
+
+The system runs multiple trials per browser and aggregates results to provide reliable comparisons.
+
+Features (Alpha)
+Runs automated tests across Safari, Chrome, and Firefox
+Executes 25 trials per browser (75 total runs)
+Measures CPU and memory usage
+Stores results in CSV format
+Exports results to JSON for dashboard visualization
+Includes a React-based dashboard for analysis
+Supports simulation mode for consistent execution
+How to Run
+Run Backend
+cd backend
+python safe_web_mvp.py
+
+This will:
+
+run 25 trials per browser
+generate safe_web_results.csv
+export results to frontend
+Run Frontend
+cd frontend
+npm install
+npm run dev
+
+Open in browser:
+
+http://localhost:5173
+Example Output
+
+Results are saved in:
+
+backend/data/safe_web_results.csv
+frontend/src/data/backendResults.json
 
 The dashboard displays:
 
 average CPU usage
 average memory usage
-top-performing browser
-summary comparison table
-🧪 Methodology
+total runs
+browser comparison
+Current Status (Alpha)
+~60–70% functionality implemented
+Core testing pipeline working
+Backend + frontend fully integrated
+Supports Safari, Chrome, Firefox
+Simulation mode for stable execution
+Methodology
 
 The system uses a repeated trial approach:
 
 Each browser is tested 25 times
 Results are aggregated to reduce randomness
 Averages are used for comparison
-
-This improves reliability and aligns with software performance evaluation practices.
-
-📌 Current Status (Alpha)
-~60–70% functionality implemented
-Core backend pipeline complete
-Frontend dashboard integrated
-Data visualization working
-Stable execution across multiple runs
-⚠️ Limitations
-Uses simulated/simplified performance metrics
-Limited to three browsers
-No real-time monitoring
-Visualization can be further enhanced
-🔮 Future Improvements
-Add additional search engines (Bing, DuckDuckGo)
-Expand metrics (load time, network usage)
-Add statistical analysis (variance, standard deviation)
-Implement filtering and advanced charts
-Integrate real-time browser monitoring
+Next Steps
+Add more search engines (Bing, DuckDuckGo)
+Compute advanced metrics (variance, standard deviation)
+Add filtering and improved charts
+Integrate real-time performance tracking
 Deploy as a web application
-👤 Author
+Author
 
 Boris Milev
 SENG 701 Software Engineering Capstone
-
-⭐ Project Status
-
-This project is currently in the Alpha stage, with core functionality implemented and validated.
