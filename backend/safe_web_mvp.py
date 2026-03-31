@@ -99,7 +99,7 @@ def run_trial(playwright_obj, browser_name, url, trial_num):
 
     try:
         browser = browser_type.launch(headless=True)
-        browser_pid = browser.process.pid if browser.process else None
+        browser_pid = None
 
         context = browser.new_context()
         page = context.new_page()
@@ -110,15 +110,15 @@ def run_trial(playwright_obj, browser_name, url, trial_num):
         load_time_sec = round(time.perf_counter() - nav_start, 3)
 
         metrics = (
-            collect_process_tree_metrics(browser_pid, SAMPLE_SECONDS, SAMPLE_INTERVAL)
-            if browser_pid
-            else {
-                "avg_cpu_percent": 0.0,
-                "peak_cpu_percent": 0.0,
-                "avg_rss_mb": 0.0,
-                "peak_rss_mb": 0.0,
-            }
-        )
+    collect_process_tree_metrics(browser_pid, SAMPLE_SECONDS, SAMPLE_INTERVAL)
+    if browser_pid
+    else {
+        "avg_cpu_percent": 0.0,
+        "peak_cpu_percent": 0.0,
+        "avg_rss_mb": 0.0,
+        "peak_rss_mb": 0.0,
+    }
+)
 
         result = {
             "timestamp": started_at,
