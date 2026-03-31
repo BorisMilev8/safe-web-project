@@ -1,47 +1,176 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export default function BrowserMetricsDashboard() {
   const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [selectedBrowser, setSelectedBrowser] = useState("All");
 
   useEffect(() => {
     fetch("/safe_web_results_real.json")
-      .then((res) => res.json())
-      .then((json) => setData(json))
-      .catch((err) => console.error(err));
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not load safe_web_results_real.json");
+        }
+        return response.json();
+      })
+      .then((json) => {
+        setData(json);
+      })
+      .catch((err) => {
+        setError(err.message);
+      });
   }, []);
 
+  const browsers = useMemo(() => {
+    if (!data?.results) return ["All"];
+    const unique = [...new Set(data.results.map((item) => item.browser))];
+    return ["All", ...unique];
+  }, [data]);
+
+  const filteredResults = useMemo(() => {
+    if (!data?.results) return [];
+    if (selectedBrowser === "All") return data.results;
+    return data.results.filter((item) => item.browser === selectedBrowser);
+  }, [data, selectedBrowser]);
+
+  const summary = useMemo(() => {
+    if (!filteredResults.length) {
+      return {
+        runs: 0,
+        avgLoadTime: 0,
+        avgCpu: 0,
+        peakCpu: 0,
+        avgMemory: 0,
+        peakMemory: 0,
+      };
+    }
+
+    const runs = filteredResults.length;
+    const avgLoadTime =
+      filteredResults.reduce((sum, item) => sum + Number(item.load_time_sec || 0), 0) / runs;
+    const avgCpu =
+      filteredResults.reduce((sum, item) => sum + Number(item.avg_cpu_percent || 0), 0) / runs;
+    const peakCpu = Math.max(...filteredResults.map((item) => Number(item.peak_cpu_percent || 0)));
+    const avgMemory =
+      filteredResults.reduce((sum, item) => sum + Number(item.avg_rss_mb || 0), 0) / runs;
+    const peakMemory = Math.max(...filteredResults.map((item) => Number(item.peak_rss_mb || 0)));
+
+    return {
+      runs,
+      avgLoadTime,
+      avgCpu,
+      peakCpu,
+      avgMemory,
+      peakMemory,
+    };
+  }, [filteredResults]);
+
+  if (error) {
+    return (
+      <section className="card">
+        <h2>Dashboard Error</h2>
+        <p>{error}</p>
+        <p>Make sure frontend/public/safe_web_results_real.json exists.</p>
+      </section>
+    );
+  }
+
   if (!data) {
-    return <h2>Loading...</h2>;
+    return (
+      <section className="card">
+        <h2>Loading Dashboard...</h2>
+      </section>
+    );
   }
 
   return (
-    <div>
-      <h2>Safe Web Dashboard</h2>
+    <div className="dashboard">
+      <section className="card">
+        <div className="row">
+          <div>
+            <h2>Overview</h2>
+            <p>
+              Generated: <strong>{data.generated_at || "N/A"}</strong>
+            </p>
+          </div>
 
-      <table border="1" cellPadding="10">
-        <thead>
-          <tr>
-            <th>Browser</th>
-            <th>Load Time</th>
-            <th>Avg CPU</th>
-            <th>Peak CPU</th>
-            <th>Avg Memory</th>
-            <th>Peak Memory</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.results.map((row, i) => (
-            <tr key={i}>
-              <td>{row.browser}</td>
-              <td>{row.load_time_sec}</td>
-              <td>{row.avg_cpu_percent}</td>
-              <td>{row.peak_cpu_percent}</td>
-              <td>{row.avg_rss_mb}</td>
-              <td>{row.peak_rss_mb}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          <div>
+            <label htmlFor="browserFilter"><strong>Filter Browser:</strong></label>
+            <select
+              id="browserFilter"
+              value={selectedBrowser}
+              onChange={(e) => setSelectedBrowser(e.target.value)}
+            >
+              {browsers.map((browser) => (
+                <option key={browser} value={browser}>
+                  {browser}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section className="stats-grid">
+        <div className="stat-card">
+          <h3>Total Runs</h3>
+          <p>{summary.runs}</p>
+        </div>
+        <div className="stat-card">
+          <h3>Avg Load Time</h3>
+          <p>{summary.avgLoadTime.toFixed(2)} s</p>
+        </div>
+        <div className="stat-card">
+          <h3>Avg CPU</h3>
+          <p>{summary.avgCpu.toFixed(2)} %</p>
+        </div>
+        <div className="stat-card">
+          <h3>Peak CPU</h3>
+          <p>{summary.peakCpu.toFixed(2)} %</p>
+        </div>
+        <div className="stat-card">
+          <h3>Avg Memory</h3>
+          <p>{summary.avgMemory.toFixed(2)} MB</p>
+        </div>
+        <div className="stat-card">
+          <h3>Peak Memory</h3>
+          <p>{summary.peakMemory.toFixed(2)} MB</p>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Test Results</h2>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Browser</th>
+                <th>URL</th>
+                <th>Load Time (s)</th>
+                <th>Avg CPU (%)</th>
+                <th>Peak CPU (%)</th>
+                <th>Avg Memory (MB)</th>
+                <th>Peak Memory (MB)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredResults.map((item, index) => (
+                <tr key={`${item.timestamp}-${index}`}>
+                  <td>{item.timestamp}</td>
+                  <td>{item.browser}</td>
+                  <td className="url-cell">{item.url}</td>
+                  <td>{Number(item.load_time_sec || 0).toFixed(2)}</td>
+                  <td>{Number(item.avg_cpu_percent || 0).toFixed(2)}</td>
+                  <td>{Number(item.peak_cpu_percent || 0).toFixed(2)}</td>
+                  <td>{Number(item.avg_rss_mb || 0).toFixed(2)}</td>
+                  <td>{Number(item.peak_rss_mb || 0).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
