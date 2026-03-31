@@ -2,8 +2,8 @@
   "generated_at": "2026-03-31T12:00:00",
   "config": {
     "urls_tested": [
-      "https://example.com",
-      "https://www.wikipedia.org",
+      "https://wikipedia.org",
+      "https://www.cnn.com",
       "https://news.ycombinator.com"
     ],
     "trials_per_browser": 3,
