@@ -1,258 +1,287 @@
 import csv
 import json
-import sys
-import unittest
-from collections import defaultdict
-from dataclasses import dataclass
+import statistics
+import time
 from datetime import datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import DefaultDict, Dict, List, Optional, Tuple
+
+import psutil
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
-# Safe Web MVP + DASHBOARD
+URLS_TO_TEST = [
+    "https://example.com",
+    "https://www.wikipedia.org",
+    "https://news.ycombinator.com",
+]
 
+TRIALS_PER_BROWSER = 3
+SAMPLE_SECONDS = 5
+SAMPLE_INTERVAL = 0.5
 
-@dataclass
-class BrowserConfig:
-    key: str
-    name: str
-    app_path: str
-    app_name: str
-    process_names: List[str]
-    search_url_template: str
-
-
-BROWSERS: Dict[str, BrowserConfig] = {
-    "safari": BrowserConfig(
-        key="safari",
-        name="Safari",
-        app_path="/Applications/Safari.app",
-        app_name="Safari",
-        process_names=["Safari", "com.apple.WebKit.WebContent"],
-        search_url_template="https://www.google.com/search?q={query}",
-    ),
-    "chrome": BrowserConfig(
-        key="chrome",
-        name="Google Chrome",
-        app_path="/Applications/Google Chrome.app",
-        app_name="Google Chrome",
-        process_names=["Google Chrome", "Google Chrome Helper"],
-        search_url_template="https://www.google.com/search?q={query}",
-    ),
-    "firefox": BrowserConfig(
-        key="firefox",
-        name="Firefox",
-        app_path="/Applications/Firefox.app",
-        app_name="Firefox",
-        process_names=["firefox", "Firefox"],
-        search_url_template="https://www.google.com/search?q={query}",
-    ),
-}
-
-
-DEFAULT_QUERY = "browser privacy comparison"
-DEFAULT_BROWSER_ORDER = ["safari", "chrome", "firefox"]
-TRIALS_PER_BROWSER = 25  # 🔥 change this to 10 or 25 later
-CURRENT_HEADERS = ["timestamp", "browser", "cpu", "memory"]
-CPU_HEADER_CANDIDATES = ["cpu", "avg_cpu_percent"]
-MEMORY_HEADER_CANDIDATES = ["memory", "avg_memory_mb"]
-
-
-def resolve_base_dir() -> Path:
-    """Return a stable base directory in both script and sandbox environments."""
-    if "__file__" in globals():
-        return Path(__file__).resolve().parent
-    return Path.cwd().resolve()
-
-
-# Backend storage
-BASE_DIR = resolve_base_dir()
+BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
-RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
+
+CSV_PATH = DATA_DIR / "safe_web_results.csv"
+JSON_PATH = DATA_DIR / "safe_web_results_real.json"
+
+BROWSERS = ["chromium", "firefox", "webkit"]
 
 
-def simulate_metrics(config: BrowserConfig, query: str, trial: int) -> Dict[str, float]:
-    seed = sum(ord(char) for char in f"{config.key}|{query}|{trial}")
+def get_browser_type(playwright_obj, browser_name):
+    mapping = {
+        "chromium": playwright_obj.chromium,
+        "firefox": playwright_obj.firefox,
+        "webkit": playwright_obj.webkit,
+    }
+    return mapping[browser_name]
+
+
+def collect_process_tree_metrics(root_pid, sample_seconds=5, interval=0.5):
+    try:
+        root = psutil.Process(root_pid)
+    except psutil.NoSuchProcess:
+        return {
+            "avg_cpu_percent": 0.0,
+            "peak_cpu_percent": 0.0,
+            "avg_rss_mb": 0.0,
+            "peak_rss_mb": 0.0,
+        }
+
+    processes = [root] + root.children(recursive=True)
+    for proc in processes:
+        try:
+            proc.cpu_percent(interval=None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    cpu_samples = []
+    rss_samples = []
+
+    end_time = time.time() + sample_seconds
+    while time.time() < end_time:
+        total_cpu = 0.0
+        total_rss = 0
+
+        try:
+            current_processes = [root] + root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            current_processes = []
+
+        for proc in current_processes:
+            try:
+                total_cpu += proc.cpu_percent(interval=None)
+                total_rss += proc.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        cpu_samples.append(total_cpu)
+        rss_samples.append(total_rss / (1024 * 1024))
+        time.sleep(interval)
+
     return {
-        "avg_cpu_percent": round(10 + (seed % 10), 2),
-        "avg_memory_mb": round(200 + (seed % 50), 2),
+        "avg_cpu_percent": round(statistics.mean(cpu_samples), 2) if cpu_samples else 0.0,
+        "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
+        "avg_rss_mb": round(statistics.mean(rss_samples), 2) if rss_samples else 0.0,
+        "peak_rss_mb": round(max(rss_samples), 2) if rss_samples else 0.0,
     }
 
 
-def resolve_query(argv: Optional[List[str]] = None) -> str:
-    args = sys.argv if argv is None else argv
-    return " ".join(args[1:]) if len(args) > 1 else DEFAULT_QUERY
+def run_trial(playwright_obj, browser_name, url, trial_num):
+    browser_type = get_browser_type(playwright_obj, browser_name)
 
+    browser = None
+    context = None
+    page = None
 
-def write_csv_header_if_needed(results_file: Path = RESULTS_FILE) -> None:
-    results_file.parent.mkdir(parents=True, exist_ok=True)
-    if not results_file.exists():
-        with results_file.open("w", newline="", encoding="utf-8") as handle:
-            csv.writer(handle).writerow(CURRENT_HEADERS)
+    started_at = datetime.now().isoformat()
 
+    try:
+        browser = browser_type.launch(headless=True)
+        browser_pid = browser.process.pid if browser.process else None
 
-def append_result(browser: str, metrics: Dict[str, float], results_file: Path = RESULTS_FILE) -> None:
-    results_file.parent.mkdir(parents=True, exist_ok=True)
-    with results_file.open("a", newline="", encoding="utf-8") as handle:
-        csv.writer(handle).writerow(
-            [
-                datetime.now().isoformat(timespec="seconds"),
-                browser,
-                metrics["avg_cpu_percent"],
-                metrics["avg_memory_mb"],
-            ]
+        context = browser.new_context()
+        page = context.new_page()
+
+        nav_start = time.perf_counter()
+        page.goto(url, wait_until="load", timeout=30000)
+        page.wait_for_timeout(2000)
+        load_time_sec = round(time.perf_counter() - nav_start, 3)
+
+        metrics = (
+            collect_process_tree_metrics(browser_pid, SAMPLE_SECONDS, SAMPLE_INTERVAL)
+            if browser_pid
+            else {
+                "avg_cpu_percent": 0.0,
+                "peak_cpu_percent": 0.0,
+                "avg_rss_mb": 0.0,
+                "peak_rss_mb": 0.0,
+            }
         )
 
+        result = {
+            "timestamp": started_at,
+            "browser": browser_name,
+            "url": url,
+            "trial": trial_num,
+            "success": True,
+            "load_time_sec": load_time_sec,
+            "avg_cpu_percent": metrics["avg_cpu_percent"],
+            "peak_cpu_percent": metrics["peak_cpu_percent"],
+            "avg_rss_mb": metrics["avg_rss_mb"],
+            "peak_rss_mb": metrics["peak_rss_mb"],
+            "error": "",
+        }
 
-def detect_metric_headers(fieldnames: Optional[List[str]]) -> Tuple[str, str]:
-    if not fieldnames:
-        raise ValueError("CSV header row is missing.")
-
-    cpu_header = next((name for name in CPU_HEADER_CANDIDATES if name in fieldnames), None)
-    memory_header = next((name for name in MEMORY_HEADER_CANDIDATES if name in fieldnames), None)
-
-    if not cpu_header or not memory_header:
-        raise ValueError("Missing CPU or Memory columns")
-
-    return cpu_header, memory_header
-
-
-def load_dashboard_data(results_file: Path = RESULTS_FILE) -> DefaultDict[str, List[Dict[str, float]]]:
-    data: DefaultDict[str, List[Dict[str, float]]] = defaultdict(list)
-
-    if not results_file.exists():
-        return data
-
-    with results_file.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        cpu_header, memory_header = detect_metric_headers(reader.fieldnames)
-        for row in reader:
-            browser_name = row.get("browser", "").strip()
-            if not browser_name:
-                continue
-            data[browser_name].append(
-                {
-                    "cpu": float(row[cpu_header]),
-                    "memory": float(row[memory_header]),
-                }
-            )
-    return data
-
-
-def export_dashboard_json(
-    results_file: Path = RESULTS_FILE,
-    frontend_data_dir: Optional[Path] = None,
-) -> Path:
-    data = load_dashboard_data(results_file)
-    rows: List[Dict[str, float | str]] = []
-
-    for browser, values in data.items():
-        for value in values:
-            rows.append(
-                {
-                    "browser": browser,
-                    "cpu": value["cpu"],
-                    "memory": value["memory"],
-                }
-            )
-
-    output_dir = frontend_data_dir or (BASE_DIR.parent / "frontend" / "src" / "data")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / "backendResults.json"
-
-    with output_file.open("w", encoding="utf-8") as handle:
-        json.dump(rows, handle, indent=2)
-
-    print(f"Exported JSON → {output_file}")
-    return output_file
-
-
-def generate_dashboard(results_file: Path = RESULTS_FILE) -> None:
-    print("\n📊 DASHBOARD RESULTS")
-    print("=" * 40)
-
-    data = load_dashboard_data(results_file)
-    if not data:
-        print("No data available")
-        return
-
-    for browser, values in data.items():
-        avg_cpu = sum(value["cpu"] for value in values) / len(values)
-        avg_mem = sum(value["memory"] for value in values) / len(values)
-        print(f"\n{browser}")
-        print(f"  Avg CPU: {avg_cpu:.2f}%")
-        print(f"  Avg Memory: {avg_mem:.2f} MB")
-
-
-def main() -> None:
-    write_csv_header_if_needed()
-    query = resolve_query()
-
-    for key in DEFAULT_BROWSER_ORDER:
-        config = BROWSERS[key]
-        for trial in range(1, TRIALS_PER_BROWSER + 1):
-            metrics = simulate_metrics(config, query, trial)
-            append_result(config.name, metrics)
-
-    print("\nRun complete!")
-    export_dashboard_json()
-    generate_dashboard()
-
-
-class SafeWebMvpTests(unittest.TestCase):
-    def test_resolve_base_dir_without___file__(self) -> None:
-        original_file = globals().pop("__file__", None)
+    except PlaywrightTimeoutError:
+        result = {
+            "timestamp": started_at,
+            "browser": browser_name,
+            "url": url,
+            "trial": trial_num,
+            "success": False,
+            "load_time_sec": None,
+            "avg_cpu_percent": None,
+            "peak_cpu_percent": None,
+            "avg_rss_mb": None,
+            "peak_rss_mb": None,
+            "error": "Navigation timeout",
+        }
+    except Exception as e:
+        result = {
+            "timestamp": started_at,
+            "browser": browser_name,
+            "url": url,
+            "trial": trial_num,
+            "success": False,
+            "load_time_sec": None,
+            "avg_cpu_percent": None,
+            "peak_cpu_percent": None,
+            "avg_rss_mb": None,
+            "peak_rss_mb": None,
+            "error": str(e),
+        }
+    finally:
         try:
-            self.assertEqual(resolve_base_dir(), Path.cwd().resolve())
-        finally:
-            if original_file is not None:
-                globals()["__file__"] = original_file
+            if page:
+                page.close()
+        except Exception:
+            pass
+        try:
+            if context:
+                context.close()
+        except Exception:
+            pass
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
 
-    def test_resolve_query_uses_default(self) -> None:
-        self.assertEqual(resolve_query(["safe_web_mvp.py"]), DEFAULT_QUERY)
+    print(
+        f"[{browser_name}] Trial {trial_num} | URL={url} | "
+        f"success={result['success']} | error={result['error'] or 'none'}"
+    )
+    return result
 
-    def test_resolve_query_uses_cli_args(self) -> None:
-        self.assertEqual(
-            resolve_query(["safe_web_mvp.py", "private", "search"]),
-            "private search",
-        )
 
-    def test_detect_metric_headers_current(self) -> None:
-        self.assertEqual(
-            detect_metric_headers(["timestamp", "browser", "cpu", "memory"]),
-            ("cpu", "memory"),
-        )
+def summarize_results(results):
+    summary = []
 
-    def test_detect_metric_headers_legacy(self) -> None:
-        self.assertEqual(
-            detect_metric_headers(["timestamp", "browser", "avg_cpu_percent", "avg_memory_mb"]),
-            ("avg_cpu_percent", "avg_memory_mb"),
-        )
+    for browser_name in BROWSERS:
+        browser_results = [
+            row for row in results
+            if row["browser"] == browser_name and row["success"]
+        ]
 
-    def test_export_dashboard_json_creates_output(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            results_file = temp_path / "data" / "safe_web_results.csv"
-            frontend_data_dir = temp_path / "frontend" / "src" / "data"
+        if not browser_results:
+            summary.append({
+                "browser": browser_name,
+                "runs": 0,
+                "avg_load_time_sec": None,
+                "avg_cpu_percent": None,
+                "peak_cpu_percent": None,
+                "avg_rss_mb": None,
+                "peak_rss_mb": None,
+            })
+            continue
 
-            write_csv_header_if_needed(results_file)
-            append_result("Safari", {"avg_cpu_percent": 12.5, "avg_memory_mb": 220.0}, results_file)
-            append_result("Firefox", {"avg_cpu_percent": 14.0, "avg_memory_mb": 230.0}, results_file)
+        avg_load_times = [row["load_time_sec"] for row in browser_results if row["load_time_sec"] is not None]
+        avg_cpu_vals = [row["avg_cpu_percent"] for row in browser_results if row["avg_cpu_percent"] is not None]
+        peak_cpu_vals = [row["peak_cpu_percent"] for row in browser_results if row["peak_cpu_percent"] is not None]
+        avg_rss_vals = [row["avg_rss_mb"] for row in browser_results if row["avg_rss_mb"] is not None]
+        peak_rss_vals = [row["peak_rss_mb"] for row in browser_results if row["peak_rss_mb"] is not None]
 
-            output_file = export_dashboard_json(results_file, frontend_data_dir)
-            self.assertTrue(output_file.exists())
+        summary.append({
+            "browser": browser_name,
+            "runs": len(browser_results),
+            "avg_load_time_sec": round(statistics.mean(avg_load_times), 2) if avg_load_times else None,
+            "avg_cpu_percent": round(statistics.mean(avg_cpu_vals), 2) if avg_cpu_vals else None,
+            "peak_cpu_percent": round(max(peak_cpu_vals), 2) if peak_cpu_vals else None,
+            "avg_rss_mb": round(statistics.mean(avg_rss_vals), 2) if avg_rss_vals else None,
+            "peak_rss_mb": round(max(peak_rss_vals), 2) if peak_rss_vals else None,
+        })
 
-            with output_file.open("r", encoding="utf-8") as handle:
-                rows = json.load(handle)
+    return summary
 
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[0]["browser"], "Safari")
-            self.assertIn("cpu", rows[0])
-            self.assertIn("memory", rows[0])
+
+def save_csv(results):
+    fieldnames = [
+        "timestamp",
+        "browser",
+        "url",
+        "trial",
+        "success",
+        "load_time_sec",
+        "avg_cpu_percent",
+        "peak_cpu_percent",
+        "avg_rss_mb",
+        "peak_rss_mb",
+        "error",
+    ]
+
+    with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+
+def save_json(results, summary):
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "config": {
+            "urls_tested": URLS_TO_TEST,
+            "trials_per_browser": TRIALS_PER_BROWSER,
+            "sample_seconds": SAMPLE_SECONDS,
+            "sample_interval": SAMPLE_INTERVAL,
+            "browsers": BROWSERS,
+        },
+        "summary": summary,
+        "results": results,
+    }
+
+    with open(JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def main():
+    all_results = []
+
+    with sync_playwright() as p:
+        for browser_name in BROWSERS:
+            for url in URLS_TO_TEST:
+                for trial in range(1, TRIALS_PER_BROWSER + 1):
+                    result = run_trial(p, browser_name, url, trial)
+                    all_results.append(result)
+
+    summary = summarize_results(all_results)
+    save_csv(all_results)
+    save_json(all_results, summary)
+
+    print(f"\nSaved CSV to: {CSV_PATH}")
+    print(f"Saved JSON to: {JSON_PATH}")
 
 
 if __name__ == "__main__":
     main()
-
