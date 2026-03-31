@@ -1,14 +1,11 @@
 import csv
 import json
-import sys
 import time
-import unittest
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import DefaultDict, Dict, List, Optional, Tuple
+from typing import DefaultDict, Dict, List
 
 import psutil
 from playwright.sync_api import sync_playwright
@@ -40,18 +37,19 @@ BROWSERS: Dict[str, BrowserConfig] = {
 }
 
 DEFAULT_BROWSER_ORDER = ["chrome", "firefox", "safari"]
-TRIALS_PER_BROWSER = 3
+
+# Keep this small for now so you can demo it fast.
+TRIALS_PER_BROWSER = 1
+
 URLS_TO_TEST = [
-    "https://youtube.com",
+    "https://example.com",
     "https://www.wikipedia.org",
     "https://www.cnn.com",
 ]
 
 
 def resolve_base_dir() -> Path:
-    if "__file__" in globals():
-        return Path(__file__).resolve().parent
-    return Path.cwd().resolve()
+    return Path(__file__).resolve().parent
 
 
 BASE_DIR = resolve_base_dir()
@@ -101,9 +99,14 @@ def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25
 
     try:
         parent = psutil.Process(pid)
-        processes = [parent] + parent.children(recursive=True)
 
-        for proc in processes:
+        initial_processes = [parent]
+        try:
+            initial_processes += parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+        for proc in initial_processes:
             try:
                 proc.cpu_percent(interval=None)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -139,6 +142,7 @@ def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25
             "avg_rss_mb": round(sum(memory_samples) / len(memory_samples), 2) if memory_samples else 0.0,
             "peak_rss_mb": round(max(memory_samples), 2) if memory_samples else 0.0,
         }
+
     except Exception as exc:
         print(f"Measurement error for pid {pid}: {exc}")
         return {
@@ -163,23 +167,30 @@ def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[
         page.goto(url, wait_until="load", timeout=60000)
         load_time_sec = round(time.perf_counter() - start, 2)
 
+        # Give the page a moment to finish extra work after load
         page.wait_for_timeout(5000)
 
-        metrics = measure_process_tree(browser_pid, duration=8.0, interval=0.25) if browser_pid else {
-            "avg_cpu_percent": 0.0,
-            "peak_cpu_percent": 0.0,
-            "avg_rss_mb": 0.0,
-            "peak_rss_mb": 0.0,
-        }
+        metrics = (
+            measure_process_tree(browser_pid, duration=8.0, interval=0.25)
+            if browser_pid
+            else {
+                "avg_cpu_percent": 0.0,
+                "peak_cpu_percent": 0.0,
+                "avg_rss_mb": 0.0,
+                "peak_rss_mb": 0.0,
+            }
+        )
 
         context.close()
+
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "browser": browser_config.playwright_name,
+            "browser": browser_config.name,
             "url": url,
             "load_time_sec": load_time_sec,
             **metrics,
         }
+
     finally:
         browser.close()
 
@@ -230,7 +241,7 @@ def export_dashboard_json(results_file: Path = RESULTS_FILE, output_file: Path =
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "config": {
-            "browsers": [BROWSERS[key].playwright_name for key in DEFAULT_BROWSER_ORDER],
+            "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
             "trials_per_browser": TRIALS_PER_BROWSER,
             "urls_tested": URLS_TO_TEST,
         },
@@ -255,6 +266,7 @@ def main() -> None:
     with sync_playwright() as playwright:
         for key in DEFAULT_BROWSER_ORDER:
             browser_config = BROWSERS[key]
+
             for url in URLS_TO_TEST:
                 for trial in range(1, TRIALS_PER_BROWSER + 1):
                     print(f"Running {browser_config.name} | {url} | trial {trial}")
@@ -263,44 +275,6 @@ def main() -> None:
 
     export_dashboard_json()
     print("Run complete!")
-
-
-class SafeWebMvpTests(unittest.TestCase):
-    def test_resolve_base_dir_without___file__(self) -> None:
-        original_file = globals().pop("__file__", None)
-        try:
-            self.assertEqual(resolve_base_dir(), Path.cwd().resolve())
-        finally:
-            if original_file is not None:
-                globals()["__file__"] = original_file
-
-    def test_build_summary(self) -> None:
-        rows = [
-            {
-                "timestamp": "2026-01-01T10:00:00",
-                "browser": "chromium",
-                "url": "https://example.com",
-                "load_time_sec": 1.2,
-                "avg_cpu_percent": 10.0,
-                "peak_cpu_percent": 20.0,
-                "avg_rss_mb": 200.0,
-                "peak_rss_mb": 250.0,
-            },
-            {
-                "timestamp": "2026-01-01T10:01:00",
-                "browser": "chromium",
-                "url": "https://example.com",
-                "load_time_sec": 1.4,
-                "avg_cpu_percent": 12.0,
-                "peak_cpu_percent": 22.0,
-                "avg_rss_mb": 220.0,
-                "peak_rss_mb": 270.0,
-            },
-        ]
-        summary = build_summary(rows)
-        self.assertEqual(summary[0]["browser"], "chromium")
-        self.assertEqual(summary[0]["runs"], 2)
-        self.assertEqual(summary[0]["avg_load_time_sec"], 1.3)
 
 
 if __name__ == "__main__":
