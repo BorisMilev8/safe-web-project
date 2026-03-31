@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, List
+from typing import DefaultDict, Dict, List, Optional
 
 import psutil
 from playwright.sync_api import sync_playwright
@@ -17,6 +17,7 @@ class BrowserConfig:
     key: str
     name: str
     playwright_name: str
+    process_name_keywords: List[str]
 
 
 BROWSERS: Dict[str, BrowserConfig] = {
@@ -24,28 +25,28 @@ BROWSERS: Dict[str, BrowserConfig] = {
         key="chrome",
         name="Google Chrome",
         playwright_name="chromium",
+        process_name_keywords=["chrome", "chromium"],
     ),
     "firefox": BrowserConfig(
         key="firefox",
         name="Firefox",
         playwright_name="firefox",
+        process_name_keywords=["firefox"],
     ),
     "safari": BrowserConfig(
         key="safari",
         name="Safari",
         playwright_name="webkit",
+        process_name_keywords=["safari", "webkit"],
     ),
 }
 
-# For a safer demo, start with Chrome + Firefox.
 DEFAULT_BROWSER_ORDER = ["chrome", "firefox"]
-
-# Keep this low for demo speed.
 TRIALS_PER_BROWSER = 1
 
 URLS_TO_TEST = [
-    "https://example.com",
-    "https://www.wikipedia.org",
+    "https://wikipedia.org",
+    "https://www.youtube.com",
     "https://www.cnn.com",
 ]
 
@@ -95,59 +96,73 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
         ])
 
 
+def get_headless_mode() -> bool:
+    default_value = "true" if os.getenv("CI") else "false"
+    return os.getenv("SAFEWEB_HEADLESS", default_value).lower() == "true"
+
+
+def snapshot_matching_pids(keywords: List[str]) -> set[int]:
+    matches = set()
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if any(keyword in name for keyword in keywords):
+                matches.add(proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return matches
+
+
+def find_new_browser_pid(keywords: List[str], before_pids: set[int], timeout: float = 8.0) -> Optional[int]:
+    deadline = time.time() + timeout
+    newest_pid = None
+    newest_ctime = -1.0
+
+    while time.time() < deadline:
+        for proc in psutil.process_iter(["pid", "name", "create_time"]):
+            try:
+                pid = proc.info["pid"]
+                name = (proc.info.get("name") or "").lower()
+                ctime = float(proc.info.get("create_time") or 0.0)
+
+                if pid in before_pids:
+                    continue
+
+                if any(keyword in name for keyword in keywords):
+                    if ctime > newest_ctime:
+                        newest_ctime = ctime
+                        newest_pid = pid
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if newest_pid is not None:
+            return newest_pid
+
+        time.sleep(0.2)
+
+    return None
+
+
+def collect_process_family(root_pid: int) -> List[psutil.Process]:
+    try:
+        parent = psutil.Process(root_pid)
+        processes = [parent]
+        try:
+            processes.extend(parent.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return processes
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return []
+
+
 def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25) -> Dict[str, float]:
     cpu_samples: List[float] = []
     memory_samples: List[float] = []
 
-    try:
-        parent = psutil.Process(pid)
-
-        initial_processes = [parent]
-        try:
-            initial_processes += parent.children(recursive=True)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-        # Prime CPU counters
-        for proc in initial_processes:
-            try:
-                proc.cpu_percent(interval=None)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
-        time.sleep(0.1)
-        start = time.time()
-
-        while time.time() - start < duration:
-            total_cpu = 0.0
-            total_memory = 0.0
-
-            processes = [parent]
-            try:
-                processes += parent.children(recursive=True)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
-            for proc in processes:
-                try:
-                    total_cpu += proc.cpu_percent(interval=None)
-                    total_memory += proc.memory_info().rss / (1024 * 1024)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-            cpu_samples.append(total_cpu / max(psutil.cpu_count(), 1))
-            memory_samples.append(total_memory)
-            time.sleep(interval)
-
-        return {
-            "avg_cpu_percent": round(sum(cpu_samples) / len(cpu_samples), 2) if cpu_samples else 0.0,
-            "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
-            "avg_rss_mb": round(sum(memory_samples) / len(memory_samples), 2) if memory_samples else 0.0,
-            "peak_rss_mb": round(max(memory_samples), 2) if memory_samples else 0.0,
-        }
-
-    except Exception as exc:
-        print(f"Measurement error for pid {pid}: {exc}")
+    processes = collect_process_family(pid)
+    if not processes:
+        print(f"Could not collect process family for pid {pid}")
         return {
             "avg_cpu_percent": 0.0,
             "peak_cpu_percent": 0.0,
@@ -155,45 +170,77 @@ def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25
             "peak_rss_mb": 0.0,
         }
 
+    for proc in processes:
+        try:
+            proc.cpu_percent(interval=None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
-def get_headless_mode() -> bool:
-    # In CI / GitHub runner, default to headless.
-    # On your laptop, default to headed.
-    default_value = "true" if os.getenv("CI") else "false"
-    return os.getenv("SAFEWEB_HEADLESS", default_value).lower() == "true"
+    time.sleep(0.2)
+    start = time.time()
+
+    while time.time() - start < duration:
+        total_cpu = 0.0
+        total_memory = 0.0
+
+        current_processes = collect_process_family(pid)
+        if not current_processes:
+            break
+
+        for proc in current_processes:
+            try:
+                total_cpu += proc.cpu_percent(interval=None)
+                total_memory += proc.memory_info().rss / (1024 * 1024)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        cpu_samples.append(total_cpu / max(psutil.cpu_count(), 1))
+        memory_samples.append(total_memory)
+        time.sleep(interval)
+
+    metrics = {
+        "avg_cpu_percent": round(sum(cpu_samples) / len(cpu_samples), 2) if cpu_samples else 0.0,
+        "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
+        "avg_rss_mb": round(sum(memory_samples) / len(memory_samples), 2) if memory_samples else 0.0,
+        "peak_rss_mb": round(max(memory_samples), 2) if memory_samples else 0.0,
+    }
+
+    print(f"Measured pid {pid}: {metrics}")
+    return metrics
 
 
 def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[str, object]:
     browser_type = getattr(playwright, browser_config.playwright_name)
     headless_mode = get_headless_mode()
 
-    print(f"Launching {browser_config.name} | headless={headless_mode}")
+    before_pids = snapshot_matching_pids(browser_config.process_name_keywords)
 
+    print(f"Launching {browser_config.name} | headless={headless_mode}")
     browser = browser_type.launch(headless=headless_mode)
 
     try:
-        browser_pid = browser.process.pid if getattr(browser, "process", None) else None
-
         context = browser.new_context()
         page = context.new_page()
+
+        browser_pid = find_new_browser_pid(browser_config.process_name_keywords, before_pids, timeout=8.0)
+        print(f"Detected {browser_config.name} pid: {browser_pid}")
 
         start = time.perf_counter()
         page.goto(url, wait_until="load", timeout=60000)
         load_time_sec = round(time.perf_counter() - start, 2)
 
-        # Let the page finish any extra background loading
         page.wait_for_timeout(5000)
 
-        metrics = (
-            measure_process_tree(browser_pid, duration=8.0, interval=0.25)
-            if browser_pid
-            else {
+        if browser_pid is not None:
+            metrics = measure_process_tree(browser_pid, duration=8.0, interval=0.25)
+        else:
+            print(f"Could not detect PID for {browser_config.name}, using zero fallback")
+            metrics = {
                 "avg_cpu_percent": 0.0,
                 "peak_cpu_percent": 0.0,
                 "avg_rss_mb": 0.0,
                 "peak_rss_mb": 0.0,
             }
-        )
 
         context.close()
 
