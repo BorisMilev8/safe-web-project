@@ -1,12 +1,13 @@
 import csv
 import json
 import os
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, List, Optional
+from typing import DefaultDict, Dict, List, Optional, Set, Tuple
 
 import psutil
 from playwright.sync_api import sync_playwright
@@ -18,6 +19,7 @@ class BrowserConfig:
     name: str
     playwright_name: str
     process_name_keywords: List[str]
+    launch_channel: Optional[str] = None
 
 
 BROWSERS: Dict[str, BrowserConfig] = {
@@ -26,18 +28,21 @@ BROWSERS: Dict[str, BrowserConfig] = {
         name="Google Chrome",
         playwright_name="chromium",
         process_name_keywords=["chrome", "chromium"],
+        launch_channel="chrome",
     ),
     "firefox": BrowserConfig(
         key="firefox",
         name="Firefox",
         playwright_name="firefox",
         process_name_keywords=["firefox"],
+        launch_channel=None,
     ),
     "safari": BrowserConfig(
         key="safari",
-        name="Safari",
+        name="Safari/WebKit",
         playwright_name="webkit",
         process_name_keywords=["safari", "webkit"],
+        launch_channel=None,
     ),
 }
 
@@ -45,10 +50,15 @@ DEFAULT_BROWSER_ORDER = ["chrome", "firefox"]
 TRIALS_PER_BROWSER = 1
 
 URLS_TO_TEST = [
-    "https://wikipedia.org",
+    "https://www.wikipedia.org",
     "https://www.youtube.com",
     "https://www.cnn.com",
 ]
+
+NAVIGATION_TIMEOUT_MS = 60000
+SETTLE_AFTER_LOAD_MS = 3000
+SAMPLE_INTERVAL_SEC = 0.25
+EXTRA_OBSERVE_SEC = 2.0
 
 
 def resolve_base_dir() -> Path:
@@ -57,7 +67,7 @@ def resolve_base_dir() -> Path:
 
 BASE_DIR = resolve_base_dir()
 DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
 FRONTEND_OUTPUT = BASE_DIR.parent / "frontend" / "public" / "safe_web_results_real.json"
@@ -97,43 +107,54 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
 
 
 def get_headless_mode() -> bool:
-    default_value = "true" if os.getenv("CI") else "false"
-    return os.getenv("SAFEWEB_HEADLESS", default_value).lower() == "true"
+    # For real CPU/memory dashboard data, headless should usually be false.
+    # You can still override with SAFEWEB_HEADLESS=true if you really want headless.
+    env_value = os.getenv("SAFEWEB_HEADLESS")
+    if env_value is None:
+        return False
+    return env_value.strip().lower() == "true"
 
 
-def snapshot_matching_pids(keywords: List[str]) -> set[int]:
-    matches = set()
-    for proc in psutil.process_iter(["pid", "name"]):
+def safe_lower(value: Optional[str]) -> str:
+    return (value or "").lower()
+
+
+def snapshot_matching_processes(keywords: List[str]) -> Dict[int, Dict[str, object]]:
+    matches: Dict[int, Dict[str, object]] = {}
+    for proc in psutil.process_iter(["pid", "name", "create_time", "cmdline"]):
         try:
-            name = (proc.info.get("name") or "").lower()
-            if any(keyword in name for keyword in keywords):
-                matches.add(proc.info["pid"])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            name = safe_lower(proc.info.get("name"))
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if any(keyword in name or keyword in cmdline for keyword in keywords):
+                matches[proc.info["pid"]] = {
+                    "pid": proc.info["pid"],
+                    "name": proc.info.get("name") or "",
+                    "create_time": float(proc.info.get("create_time") or 0.0),
+                    "cmdline": proc.info.get("cmdline") or [],
+                }
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     return matches
 
 
-def find_new_browser_pid(keywords: List[str], before_pids: set[int], timeout: float = 8.0) -> Optional[int]:
+def find_new_browser_root_pid(
+    keywords: List[str],
+    before: Dict[int, Dict[str, object]],
+    timeout: float = 10.0,
+) -> Optional[int]:
     deadline = time.time() + timeout
-    newest_pid = None
+    newest_pid: Optional[int] = None
     newest_ctime = -1.0
 
     while time.time() < deadline:
-        for proc in psutil.process_iter(["pid", "name", "create_time"]):
-            try:
-                pid = proc.info["pid"]
-                name = (proc.info.get("name") or "").lower()
-                ctime = float(proc.info.get("create_time") or 0.0)
-
-                if pid in before_pids:
-                    continue
-
-                if any(keyword in name for keyword in keywords):
-                    if ctime > newest_ctime:
-                        newest_ctime = ctime
-                        newest_pid = pid
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+        after = snapshot_matching_processes(keywords)
+        for pid, info in after.items():
+            if pid in before:
                 continue
+            ctime = float(info.get("create_time") or 0.0)
+            if ctime > newest_ctime:
+                newest_ctime = ctime
+                newest_pid = pid
 
         if newest_pid is not None:
             return newest_pid
@@ -143,106 +164,202 @@ def find_new_browser_pid(keywords: List[str], before_pids: set[int], timeout: fl
     return None
 
 
-def collect_process_family(root_pid: int) -> List[psutil.Process]:
+def collect_descendant_pids(root_pid: int) -> Set[int]:
     try:
-        parent = psutil.Process(root_pid)
-        processes = [parent]
+        root = psutil.Process(root_pid)
+        pids = {root.pid}
         try:
-            processes.extend(parent.children(recursive=True))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            for child in root.children(recursive=True):
+                pids.add(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
-        return processes
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return []
+        return pids
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return set()
 
 
-def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25) -> Dict[str, float]:
-    cpu_samples: List[float] = []
-    memory_samples: List[float] = []
+def collect_dynamic_browser_pids(
+    root_pid: Optional[int],
+    browser_keywords: List[str],
+    launch_time: float,
+) -> Set[int]:
+    pids: Set[int] = set()
 
-    processes = collect_process_family(pid)
-    if not processes:
-        print(f"Could not collect process family for pid {pid}")
-        return {
-            "avg_cpu_percent": 0.0,
-            "peak_cpu_percent": 0.0,
-            "avg_rss_mb": 0.0,
-            "peak_rss_mb": 0.0,
-        }
+    if root_pid is not None:
+        pids |= collect_descendant_pids(root_pid)
 
-    for proc in processes:
+    for proc in psutil.process_iter(["pid", "name", "create_time", "cmdline"]):
         try:
-            proc.cpu_percent(interval=None)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+            pid = proc.info["pid"]
+            name = safe_lower(proc.info.get("name"))
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            ctime = float(proc.info.get("create_time") or 0.0)
 
-    time.sleep(0.2)
-    start = time.time()
-
-    while time.time() - start < duration:
-        total_cpu = 0.0
-        total_memory = 0.0
-
-        current_processes = collect_process_family(pid)
-        if not current_processes:
-            break
-
-        for proc in current_processes:
-            try:
-                total_cpu += proc.cpu_percent(interval=None)
-                total_memory += proc.memory_info().rss / (1024 * 1024)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            if ctime + 0.001 < launch_time:
                 continue
 
-        cpu_samples.append(total_cpu / max(psutil.cpu_count(), 1))
-        memory_samples.append(total_memory)
-        time.sleep(interval)
+            if any(keyword in name or keyword in cmdline for keyword in browser_keywords):
+                pids.add(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
 
-    metrics = {
-        "avg_cpu_percent": round(sum(cpu_samples) / len(cpu_samples), 2) if cpu_samples else 0.0,
-        "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
-        "avg_rss_mb": round(sum(memory_samples) / len(memory_samples), 2) if memory_samples else 0.0,
-        "peak_rss_mb": round(max(memory_samples), 2) if memory_samples else 0.0,
+    return pids
+
+
+class BrowserMetricsSampler:
+    def __init__(
+        self,
+        root_pid: Optional[int],
+        browser_keywords: List[str],
+        launch_time: float,
+        interval: float = SAMPLE_INTERVAL_SEC,
+    ) -> None:
+        self.root_pid = root_pid
+        self.browser_keywords = browser_keywords
+        self.launch_time = launch_time
+        self.interval = interval
+
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        self.cpu_samples: List[float] = []
+        self.memory_samples: List[float] = []
+        self.seen_pids: Set[int] = set()
+        self._primed_pids: Set[int] = set()
+
+    def _prime_new_processes(self, pids: Set[int]) -> None:
+        for pid in pids:
+            if pid in self._primed_pids:
+                continue
+            try:
+                proc = psutil.Process(pid)
+                proc.cpu_percent(interval=None)
+                self._primed_pids.add(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+    def _sample_once(self) -> None:
+        current_pids = collect_dynamic_browser_pids(
+            root_pid=self.root_pid,
+            browser_keywords=self.browser_keywords,
+            launch_time=self.launch_time,
+        )
+
+        if not current_pids:
+            self.cpu_samples.append(0.0)
+            self.memory_samples.append(0.0)
+            return
+
+        self.seen_pids |= current_pids
+        self._prime_new_processes(current_pids)
+
+        total_cpu = 0.0
+        total_memory_mb = 0.0
+
+        for pid in list(current_pids):
+            try:
+                proc = psutil.Process(pid)
+                total_cpu += proc.cpu_percent(interval=None)
+                total_memory_mb += proc.memory_info().rss / (1024 * 1024)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        normalized_cpu = total_cpu / max(psutil.cpu_count() or 1, 1)
+        self.cpu_samples.append(normalized_cpu)
+        self.memory_samples.append(total_memory_mb)
+
+    def _run(self) -> None:
+        # Initial short delay gives cpu_percent baseline time to work properly
+        time.sleep(0.15)
+        while not self._stop_event.is_set():
+            self._sample_once()
+            time.sleep(self.interval)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self, extra_observe_sec: float = EXTRA_OBSERVE_SEC) -> Dict[str, float]:
+        deadline = time.time() + max(extra_observe_sec, 0.0)
+        while time.time() < deadline:
+            self._sample_once()
+            time.sleep(self.interval)
+
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+        metrics = {
+            "avg_cpu_percent": round(sum(self.cpu_samples) / len(self.cpu_samples), 2) if self.cpu_samples else 0.0,
+            "peak_cpu_percent": round(max(self.cpu_samples), 2) if self.cpu_samples else 0.0,
+            "avg_rss_mb": round(sum(self.memory_samples) / len(self.memory_samples), 2) if self.memory_samples else 0.0,
+            "peak_rss_mb": round(max(self.memory_samples), 2) if self.memory_samples else 0.0,
+        }
+        return metrics
+
+
+def launch_browser(playwright, browser_config: BrowserConfig, headless_mode: bool):
+    browser_type = getattr(playwright, browser_config.playwright_name)
+
+    launch_kwargs = {
+        "headless": headless_mode,
     }
 
-    print(f"Measured pid {pid}: {metrics}")
-    return metrics
+    # Only Chromium supports channel like "chrome"
+    if browser_config.playwright_name == "chromium" and browser_config.launch_channel:
+        launch_kwargs["channel"] = browser_config.launch_channel
+
+    return browser_type.launch(**launch_kwargs)
 
 
 def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[str, object]:
-    browser_type = getattr(playwright, browser_config.playwright_name)
     headless_mode = get_headless_mode()
 
-    before_pids = snapshot_matching_pids(browser_config.process_name_keywords)
-
-    print(f"Launching {browser_config.name} | headless={headless_mode}")
-    browser = browser_type.launch(headless=headless_mode)
+    print(f"\nLaunching {browser_config.name} | headless={headless_mode} | url={url}")
+    before = snapshot_matching_processes(browser_config.process_name_keywords)
+    browser = launch_browser(playwright, browser_config, headless_mode)
+    launch_time = time.time()
 
     try:
         context = browser.new_context()
         page = context.new_page()
 
-        browser_pid = find_new_browser_pid(browser_config.process_name_keywords, before_pids, timeout=8.0)
-        print(f"Detected {browser_config.name} pid: {browser_pid}")
+        root_pid = find_new_browser_root_pid(
+            browser_config.process_name_keywords,
+            before,
+            timeout=10.0,
+        )
+        print(f"Detected root/browser pid for {browser_config.name}: {root_pid}")
+
+        sampler = BrowserMetricsSampler(
+            root_pid=root_pid,
+            browser_keywords=browser_config.process_name_keywords,
+            launch_time=launch_time,
+            interval=SAMPLE_INTERVAL_SEC,
+        )
+        sampler.start()
 
         start = time.perf_counter()
-        page.goto(url, wait_until="load", timeout=60000)
+        try:
+            page.goto(url, wait_until="load", timeout=NAVIGATION_TIMEOUT_MS)
+        except Exception as exc:
+            print(f"Navigation warning for {browser_config.name} on {url}: {exc}")
+
         load_time_sec = round(time.perf_counter() - start, 2)
 
-        page.wait_for_timeout(5000)
+        try:
+            page.wait_for_timeout(SETTLE_AFTER_LOAD_MS)
+        except Exception:
+            pass
 
-        if browser_pid is not None:
-            metrics = measure_process_tree(browser_pid, duration=8.0, interval=0.25)
-        else:
-            print(f"Could not detect PID for {browser_config.name}, using zero fallback")
-            metrics = {
-                "avg_cpu_percent": 0.0,
-                "peak_cpu_percent": 0.0,
-                "avg_rss_mb": 0.0,
-                "peak_rss_mb": 0.0,
-            }
+        metrics = sampler.stop(extra_observe_sec=EXTRA_OBSERVE_SEC)
+        print(f"Metrics for {browser_config.name} on {url}: {metrics}")
+        print(f"Observed PIDs: {sorted(sampler.seen_pids)}")
 
-        context.close()
+        try:
+            context.close()
+        except Exception:
+            pass
 
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -253,7 +370,10 @@ def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[
         }
 
     finally:
-        browser.close()
+        try:
+            browser.close()
+        except Exception:
+            pass
 
 
 def load_results(results_file: Path = RESULTS_FILE) -> List[Dict[str, object]]:
@@ -305,6 +425,7 @@ def export_dashboard_json(results_file: Path = RESULTS_FILE, output_file: Path =
             "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
             "trials_per_browser": TRIALS_PER_BROWSER,
             "urls_tested": URLS_TO_TEST,
+            "headless": get_headless_mode(),
         },
         "summary": build_summary(rows),
         "results": rows,
@@ -314,11 +435,17 @@ def export_dashboard_json(results_file: Path = RESULTS_FILE, output_file: Path =
     with output_file.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
 
-    print(f"Exported JSON -> {output_file}")
+    print(f"Exported dashboard JSON -> {output_file}")
     return output_file
 
 
 def main() -> None:
+    print("Starting Safe Web metrics run...")
+    print(f"Base dir: {BASE_DIR}")
+    print(f"Results CSV: {RESULTS_FILE}")
+    print(f"Frontend JSON: {FRONTEND_OUTPUT}")
+    print(f"Headless mode: {get_headless_mode()}")
+
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
 
@@ -330,12 +457,12 @@ def main() -> None:
 
             for url in URLS_TO_TEST:
                 for trial in range(1, TRIALS_PER_BROWSER + 1):
-                    print(f"Running {browser_config.name} | {url} | trial {trial}")
+                    print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
                     row = run_real_trial(playwright, browser_config, url)
                     append_result(row)
 
     export_dashboard_json()
-    print("Run complete!")
+    print("\nRun complete!")
 
 
 if __name__ == "__main__":
