@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -36,9 +37,10 @@ BROWSERS: Dict[str, BrowserConfig] = {
     ),
 }
 
-DEFAULT_BROWSER_ORDER = ["chrome", "firefox", "safari"]
+# For a safer demo, start with Chrome + Firefox.
+DEFAULT_BROWSER_ORDER = ["chrome", "firefox"]
 
-# Keep this small for now so you can demo it fast.
+# Keep this low for demo speed.
 TRIALS_PER_BROWSER = 1
 
 URLS_TO_TEST = [
@@ -106,6 +108,7 @@ def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
+        # Prime CPU counters
         for proc in initial_processes:
             try:
                 proc.cpu_percent(interval=None)
@@ -153,9 +156,20 @@ def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25
         }
 
 
+def get_headless_mode() -> bool:
+    # In CI / GitHub runner, default to headless.
+    # On your laptop, default to headed.
+    default_value = "true" if os.getenv("CI") else "false"
+    return os.getenv("SAFEWEB_HEADLESS", default_value).lower() == "true"
+
+
 def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[str, object]:
     browser_type = getattr(playwright, browser_config.playwright_name)
-    browser = browser_type.launch(headless=False)
+    headless_mode = get_headless_mode()
+
+    print(f"Launching {browser_config.name} | headless={headless_mode}")
+
+    browser = browser_type.launch(headless=headless_mode)
 
     try:
         browser_pid = browser.process.pid if getattr(browser, "process", None) else None
@@ -167,7 +181,7 @@ def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[
         page.goto(url, wait_until="load", timeout=60000)
         load_time_sec = round(time.perf_counter() - start, 2)
 
-        # Give the page a moment to finish extra work after load
+        # Let the page finish any extra background loading
         page.wait_for_timeout(5000)
 
         metrics = (
