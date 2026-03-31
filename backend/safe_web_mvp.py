@@ -10,8 +10,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 
 URLS_TO_TEST = [
-    "https://example.com",
     "https://www.wikipedia.org",
+    "https://www.amazon.com",
     "https://news.ycombinator.com",
 ]
 
