@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, List, Optional, Set, Tuple
+from typing import DefaultDict, Dict, List, Optional, Set
 
 import psutil
 from playwright.sync_api import sync_playwright
@@ -35,13 +35,6 @@ BROWSERS: Dict[str, BrowserConfig] = {
         name="Firefox",
         playwright_name="firefox",
         process_name_keywords=["firefox"],
-        launch_channel=None,
-    ),
-    "safari": BrowserConfig(
-        key="safari",
-        name="Safari/WebKit",
-        playwright_name="webkit",
-        process_name_keywords=["safari", "webkit"],
         launch_channel=None,
     ),
 }
@@ -107,7 +100,10 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
 
 
 def get_headless_mode() -> bool:
-    return True
+    # Local Windows/Mac: False so browser windows pop up and CPU is more realistic.
+    # CI/Linux without X server: True.
+    return os.getenv("CI", "false").lower() == "true"
+
 
 def safe_lower(value: Optional[str]) -> str:
     return (value or "").lower()
@@ -219,52 +215,71 @@ class BrowserMetricsSampler:
         self.cpu_samples: List[float] = []
         self.memory_samples: List[float] = []
         self.seen_pids: Set[int] = set()
-        self._primed_pids: Set[int] = set()
 
-    def _prime_new_processes(self, pids: Set[int]) -> None:
-        for pid in pids:
-            if pid in self._primed_pids:
-                continue
-            try:
-                proc = psutil.Process(pid)
-                proc.cpu_percent(interval=None)
-                self._primed_pids.add(pid)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
+        self._last_wall_time: Optional[float] = None
+        self._last_total_cpu_time: Optional[float] = None
 
-    def _sample_once(self) -> None:
+    def _get_current_processes(self) -> List[psutil.Process]:
         current_pids = collect_dynamic_browser_pids(
             root_pid=self.root_pid,
             browser_keywords=self.browser_keywords,
             launch_time=self.launch_time,
         )
 
-        if not current_pids:
+        self.seen_pids |= current_pids
+
+        processes: List[psutil.Process] = []
+        for pid in current_pids:
+            try:
+                processes.append(psutil.Process(pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return processes
+
+    def _sample_once(self) -> None:
+        processes = self._get_current_processes()
+        now = time.time()
+
+        if not processes:
             self.cpu_samples.append(0.0)
             self.memory_samples.append(0.0)
+            self._last_wall_time = now
+            self._last_total_cpu_time = 0.0
             return
 
-        self.seen_pids |= current_pids
-        self._prime_new_processes(current_pids)
-
-        total_cpu = 0.0
+        total_cpu_time = 0.0
         total_memory_mb = 0.0
 
-        for pid in list(current_pids):
+        for proc in processes:
             try:
-                proc = psutil.Process(pid)
-                total_cpu += proc.cpu_percent(interval=None)
+                cpu_times = proc.cpu_times()
+                total_cpu_time += cpu_times.user + cpu_times.system
                 total_memory_mb += proc.memory_info().rss / (1024 * 1024)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
 
-        normalized_cpu = total_cpu / max(psutil.cpu_count() or 1, 1)
-        self.cpu_samples.append(normalized_cpu)
-        self.memory_samples.append(total_memory_mb)
+        if self._last_wall_time is None or self._last_total_cpu_time is None:
+            cpu_percent = 0.0
+        else:
+            wall_delta = now - self._last_wall_time
+            cpu_delta = total_cpu_time - self._last_total_cpu_time
+
+            if wall_delta > 0:
+                # 100 = one full core saturated
+                cpu_percent = max(0.0, (cpu_delta / wall_delta) * 100.0)
+            else:
+                cpu_percent = 0.0
+
+        self.cpu_samples.append(round(cpu_percent, 2))
+        self.memory_samples.append(round(total_memory_mb, 2))
+
+        self._last_wall_time = now
+        self._last_total_cpu_time = total_cpu_time
 
     def _run(self) -> None:
-        # Initial short delay gives cpu_percent baseline time to work properly
-        time.sleep(0.15)
+        self._sample_once()
+        time.sleep(self.interval)
+
         while not self._stop_event.is_set():
             self._sample_once()
             time.sleep(self.interval)
@@ -283,23 +298,18 @@ class BrowserMetricsSampler:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
-        metrics = {
+        return {
             "avg_cpu_percent": round(sum(self.cpu_samples) / len(self.cpu_samples), 2) if self.cpu_samples else 0.0,
             "peak_cpu_percent": round(max(self.cpu_samples), 2) if self.cpu_samples else 0.0,
             "avg_rss_mb": round(sum(self.memory_samples) / len(self.memory_samples), 2) if self.memory_samples else 0.0,
             "peak_rss_mb": round(max(self.memory_samples), 2) if self.memory_samples else 0.0,
         }
-        return metrics
 
 
 def launch_browser(playwright, browser_config: BrowserConfig, headless_mode: bool):
     browser_type = getattr(playwright, browser_config.playwright_name)
+    launch_kwargs = {"headless": headless_mode}
 
-    launch_kwargs = {
-        "headless": headless_mode,
-    }
-
-    # Only Chromium supports channel like "chrome"
     if browser_config.playwright_name == "chromium" and browser_config.launch_channel:
         launch_kwargs["channel"] = browser_config.launch_channel
 
