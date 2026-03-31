@@ -1,47 +1,146 @@
 import csv
 import json
-import statistics
+import sys
 import time
+import unittest
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import DefaultDict, Dict, List, Optional, Tuple
 
 import psutil
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
 
+@dataclass
+class BrowserConfig:
+    key: str
+    name: str
+    playwright_name: str
+
+
+BROWSERS: Dict[str, BrowserConfig] = {
+    "chrome": BrowserConfig(
+        key="chrome",
+        name="Google Chrome",
+        playwright_name="chromium",
+    ),
+    "firefox": BrowserConfig(
+        key="firefox",
+        name="Firefox",
+        playwright_name="firefox",
+    ),
+    "safari": BrowserConfig(
+        key="safari",
+        name="Safari",
+        playwright_name="webkit",
+    ),
+}
+
+DEFAULT_BROWSER_ORDER = ["chrome", "firefox", "safari"]
+TRIALS_PER_BROWSER = 3
 URLS_TO_TEST = [
+    "https://example.com",
     "https://www.wikipedia.org",
-    "https://www.amazon.com",
-    "https://news.ycombinator.com",
+    "https://www.cnn.com",
 ]
 
-TRIALS_PER_BROWSER = 3
-SAMPLE_SECONDS = 5
-SAMPLE_INTERVAL = 0.5
 
-BASE_DIR = Path(__file__).resolve().parent
+def resolve_base_dir() -> Path:
+    if "__file__" in globals():
+        return Path(__file__).resolve().parent
+    return Path.cwd().resolve()
+
+
+BASE_DIR = resolve_base_dir()
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
-CSV_PATH = DATA_DIR / "safe_web_results.csv"
-JSON_PATH = DATA_DIR / "safe_web_results_real.json"
+RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
+FRONTEND_OUTPUT = BASE_DIR.parent / "frontend" / "public" / "safe_web_results_real.json"
 
-BROWSERS = ["chromium", "firefox", "webkit"]
+CSV_HEADERS = [
+    "timestamp",
+    "browser",
+    "url",
+    "load_time_sec",
+    "avg_cpu_percent",
+    "peak_cpu_percent",
+    "avg_rss_mb",
+    "peak_rss_mb",
+]
 
 
-def get_browser_type(playwright_obj, browser_name):
-    mapping = {
-        "chromium": playwright_obj.chromium,
-        "firefox": playwright_obj.firefox,
-        "webkit": playwright_obj.webkit,
-    }
-    return mapping[browser_name]
+def write_csv_header_if_needed(results_file: Path = RESULTS_FILE) -> None:
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    if not results_file.exists():
+        with results_file.open("w", newline="", encoding="utf-8") as handle:
+            csv.writer(handle).writerow(CSV_HEADERS)
 
 
-def collect_process_tree_metrics(root_pid, sample_seconds=5, interval=0.5):
+def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> None:
+    with results_file.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            row["timestamp"],
+            row["browser"],
+            row["url"],
+            row["load_time_sec"],
+            row["avg_cpu_percent"],
+            row["peak_cpu_percent"],
+            row["avg_rss_mb"],
+            row["peak_rss_mb"],
+        ])
+
+
+def measure_process_tree(pid: int, duration: float = 8.0, interval: float = 0.25) -> Dict[str, float]:
+    cpu_samples: List[float] = []
+    memory_samples: List[float] = []
+
     try:
-        root = psutil.Process(root_pid)
-    except psutil.NoSuchProcess:
+        parent = psutil.Process(pid)
+        processes = [parent] + parent.children(recursive=True)
+
+        for proc in processes:
+            try:
+                proc.cpu_percent(interval=None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        time.sleep(0.1)
+        start = time.time()
+
+        while time.time() - start < duration:
+            total_cpu = 0.0
+            total_memory = 0.0
+
+            processes = [parent]
+            try:
+                processes += parent.children(recursive=True)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+            for proc in processes:
+                try:
+                    total_cpu += proc.cpu_percent(interval=None)
+                    total_memory += proc.memory_info().rss / (1024 * 1024)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            cpu_samples.append(total_cpu / max(psutil.cpu_count(), 1))
+            memory_samples.append(total_memory)
+            time.sleep(interval)
+
+        return {
+            "avg_cpu_percent": round(sum(cpu_samples) / len(cpu_samples), 2) if cpu_samples else 0.0,
+            "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
+            "avg_rss_mb": round(sum(memory_samples) / len(memory_samples), 2) if memory_samples else 0.0,
+            "peak_rss_mb": round(max(memory_samples), 2) if memory_samples else 0.0,
+        }
+    except Exception as exc:
+        print(f"Measurement error for pid {pid}: {exc}")
         return {
             "avg_cpu_percent": 0.0,
             "peak_cpu_percent": 0.0,
@@ -49,238 +148,159 @@ def collect_process_tree_metrics(root_pid, sample_seconds=5, interval=0.5):
             "peak_rss_mb": 0.0,
         }
 
-    processes = [root] + root.children(recursive=True)
-    for proc in processes:
-        try:
-            proc.cpu_percent(interval=None)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
 
-    cpu_samples = []
-    rss_samples = []
-
-    end_time = time.time() + sample_seconds
-    while time.time() < end_time:
-        total_cpu = 0.0
-        total_rss = 0
-
-        try:
-            current_processes = [root] + root.children(recursive=True)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            current_processes = []
-
-        for proc in current_processes:
-            try:
-                total_cpu += proc.cpu_percent(interval=None)
-                total_rss += proc.memory_info().rss
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-
-        cpu_samples.append(total_cpu)
-        rss_samples.append(total_rss / (1024 * 1024))
-        time.sleep(interval)
-
-    return {
-        "avg_cpu_percent": round(statistics.mean(cpu_samples), 2) if cpu_samples else 0.0,
-        "peak_cpu_percent": round(max(cpu_samples), 2) if cpu_samples else 0.0,
-        "avg_rss_mb": round(statistics.mean(rss_samples), 2) if rss_samples else 0.0,
-        "peak_rss_mb": round(max(rss_samples), 2) if rss_samples else 0.0,
-    }
-
-
-def run_trial(playwright_obj, browser_name, url, trial_num):
-    browser_type = get_browser_type(playwright_obj, browser_name)
-
-    browser = None
-    context = None
-    page = None
-
-    started_at = datetime.now().isoformat()
+def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[str, object]:
+    browser_type = getattr(playwright, browser_config.playwright_name)
+    browser = browser_type.launch(headless=False)
 
     try:
-        browser = browser_type.launch(headless=True)
-        browser_pid = None
+        browser_pid = browser.process.pid if getattr(browser, "process", None) else None
 
         context = browser.new_context()
         page = context.new_page()
 
-        nav_start = time.perf_counter()
-        page.goto(url, wait_until="load", timeout=30000)
-        page.wait_for_timeout(2000)
-        load_time_sec = round(time.perf_counter() - nav_start, 3)
+        start = time.perf_counter()
+        page.goto(url, wait_until="load", timeout=60000)
+        load_time_sec = round(time.perf_counter() - start, 2)
 
-        metrics = (
-    collect_process_tree_metrics(browser_pid, SAMPLE_SECONDS, SAMPLE_INTERVAL)
-    if browser_pid
-    else {
-        "avg_cpu_percent": 0.0,
-        "peak_cpu_percent": 0.0,
-        "avg_rss_mb": 0.0,
-        "peak_rss_mb": 0.0,
-    }
-)
+        page.wait_for_timeout(5000)
 
-        result = {
-            "timestamp": started_at,
-            "browser": browser_name,
+        metrics = measure_process_tree(browser_pid, duration=8.0, interval=0.25) if browser_pid else {
+            "avg_cpu_percent": 0.0,
+            "peak_cpu_percent": 0.0,
+            "avg_rss_mb": 0.0,
+            "peak_rss_mb": 0.0,
+        }
+
+        context.close()
+        return {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "browser": browser_config.playwright_name,
             "url": url,
-            "trial": trial_num,
-            "success": True,
             "load_time_sec": load_time_sec,
-            "avg_cpu_percent": metrics["avg_cpu_percent"],
-            "peak_cpu_percent": metrics["peak_cpu_percent"],
-            "avg_rss_mb": metrics["avg_rss_mb"],
-            "peak_rss_mb": metrics["peak_rss_mb"],
-            "error": "",
-        }
-
-    except PlaywrightTimeoutError:
-        result = {
-            "timestamp": started_at,
-            "browser": browser_name,
-            "url": url,
-            "trial": trial_num,
-            "success": False,
-            "load_time_sec": None,
-            "avg_cpu_percent": None,
-            "peak_cpu_percent": None,
-            "avg_rss_mb": None,
-            "peak_rss_mb": None,
-            "error": "Navigation timeout",
-        }
-    except Exception as e:
-        result = {
-            "timestamp": started_at,
-            "browser": browser_name,
-            "url": url,
-            "trial": trial_num,
-            "success": False,
-            "load_time_sec": None,
-            "avg_cpu_percent": None,
-            "peak_cpu_percent": None,
-            "avg_rss_mb": None,
-            "peak_rss_mb": None,
-            "error": str(e),
+            **metrics,
         }
     finally:
-        try:
-            if page:
-                page.close()
-        except Exception:
-            pass
-        try:
-            if context:
-                context.close()
-        except Exception:
-            pass
-        try:
-            if browser:
-                browser.close()
-        except Exception:
-            pass
-
-    print(
-        f"[{browser_name}] Trial {trial_num} | URL={url} | "
-        f"success={result['success']} | error={result['error'] or 'none'}"
-    )
-    return result
+        browser.close()
 
 
-def summarize_results(results):
-    summary = []
+def load_results(results_file: Path = RESULTS_FILE) -> List[Dict[str, object]]:
+    if not results_file.exists():
+        return []
 
-    for browser_name in BROWSERS:
-        browser_results = [
-            row for row in results
-            if row["browser"] == browser_name and row["success"]
-        ]
-
-        if not browser_results:
-            summary.append({
-                "browser": browser_name,
-                "runs": 0,
-                "avg_load_time_sec": None,
-                "avg_cpu_percent": None,
-                "peak_cpu_percent": None,
-                "avg_rss_mb": None,
-                "peak_rss_mb": None,
+    rows: List[Dict[str, object]] = []
+    with results_file.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            rows.append({
+                "timestamp": row["timestamp"],
+                "browser": row["browser"],
+                "url": row["url"],
+                "load_time_sec": float(row["load_time_sec"]),
+                "avg_cpu_percent": float(row["avg_cpu_percent"]),
+                "peak_cpu_percent": float(row["peak_cpu_percent"]),
+                "avg_rss_mb": float(row["avg_rss_mb"]),
+                "peak_rss_mb": float(row["peak_rss_mb"]),
             })
-            continue
+    return rows
 
-        avg_load_times = [row["load_time_sec"] for row in browser_results if row["load_time_sec"] is not None]
-        avg_cpu_vals = [row["avg_cpu_percent"] for row in browser_results if row["avg_cpu_percent"] is not None]
-        peak_cpu_vals = [row["peak_cpu_percent"] for row in browser_results if row["peak_cpu_percent"] is not None]
-        avg_rss_vals = [row["avg_rss_mb"] for row in browser_results if row["avg_rss_mb"] is not None]
-        peak_rss_vals = [row["peak_rss_mb"] for row in browser_results if row["peak_rss_mb"] is not None]
 
+def build_summary(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    grouped: DefaultDict[str, List[Dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["browser"])].append(row)
+
+    summary: List[Dict[str, object]] = []
+    for browser, items in grouped.items():
         summary.append({
-            "browser": browser_name,
-            "runs": len(browser_results),
-            "avg_load_time_sec": round(statistics.mean(avg_load_times), 2) if avg_load_times else None,
-            "avg_cpu_percent": round(statistics.mean(avg_cpu_vals), 2) if avg_cpu_vals else None,
-            "peak_cpu_percent": round(max(peak_cpu_vals), 2) if peak_cpu_vals else None,
-            "avg_rss_mb": round(statistics.mean(avg_rss_vals), 2) if avg_rss_vals else None,
-            "peak_rss_mb": round(max(peak_rss_vals), 2) if peak_rss_vals else None,
+            "browser": browser,
+            "runs": len(items),
+            "avg_load_time_sec": round(sum(i["load_time_sec"] for i in items) / len(items), 2),
+            "avg_cpu_percent": round(sum(i["avg_cpu_percent"] for i in items) / len(items), 2),
+            "peak_cpu_percent": round(max(i["peak_cpu_percent"] for i in items), 2),
+            "avg_rss_mb": round(sum(i["avg_rss_mb"] for i in items) / len(items), 2),
+            "peak_rss_mb": round(max(i["peak_rss_mb"] for i in items), 2),
         })
 
-    return summary
+    return sorted(summary, key=lambda x: str(x["browser"]))
 
 
-def save_csv(results):
-    fieldnames = [
-        "timestamp",
-        "browser",
-        "url",
-        "trial",
-        "success",
-        "load_time_sec",
-        "avg_cpu_percent",
-        "peak_cpu_percent",
-        "avg_rss_mb",
-        "peak_rss_mb",
-        "error",
-    ]
-
-    with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-
-
-def save_json(results, summary):
+def export_dashboard_json(results_file: Path = RESULTS_FILE, output_file: Path = FRONTEND_OUTPUT) -> Path:
+    rows = load_results(results_file)
     payload = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "config": {
-            "urls_tested": URLS_TO_TEST,
+            "browsers": [BROWSERS[key].playwright_name for key in DEFAULT_BROWSER_ORDER],
             "trials_per_browser": TRIALS_PER_BROWSER,
-            "sample_seconds": SAMPLE_SECONDS,
-            "sample_interval": SAMPLE_INTERVAL,
-            "browsers": BROWSERS,
+            "urls_tested": URLS_TO_TEST,
         },
-        "summary": summary,
-        "results": results,
+        "summary": build_summary(rows),
+        "results": rows,
     }
 
-    with open(JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+    print(f"Exported JSON -> {output_file}")
+    return output_file
 
 
-def main():
-    all_results = []
+def main() -> None:
+    if RESULTS_FILE.exists():
+        RESULTS_FILE.unlink()
 
-    with sync_playwright() as p:
-        for browser_name in BROWSERS:
+    write_csv_header_if_needed()
+
+    with sync_playwright() as playwright:
+        for key in DEFAULT_BROWSER_ORDER:
+            browser_config = BROWSERS[key]
             for url in URLS_TO_TEST:
                 for trial in range(1, TRIALS_PER_BROWSER + 1):
-                    result = run_trial(p, browser_name, url, trial)
-                    all_results.append(result)
+                    print(f"Running {browser_config.name} | {url} | trial {trial}")
+                    row = run_real_trial(playwright, browser_config, url)
+                    append_result(row)
 
-    summary = summarize_results(all_results)
-    save_csv(all_results)
-    save_json(all_results, summary)
+    export_dashboard_json()
+    print("Run complete!")
 
-    print(f"\nSaved CSV to: {CSV_PATH}")
-    print(f"Saved JSON to: {JSON_PATH}")
+
+class SafeWebMvpTests(unittest.TestCase):
+    def test_resolve_base_dir_without___file__(self) -> None:
+        original_file = globals().pop("__file__", None)
+        try:
+            self.assertEqual(resolve_base_dir(), Path.cwd().resolve())
+        finally:
+            if original_file is not None:
+                globals()["__file__"] = original_file
+
+    def test_build_summary(self) -> None:
+        rows = [
+            {
+                "timestamp": "2026-01-01T10:00:00",
+                "browser": "chromium",
+                "url": "https://example.com",
+                "load_time_sec": 1.2,
+                "avg_cpu_percent": 10.0,
+                "peak_cpu_percent": 20.0,
+                "avg_rss_mb": 200.0,
+                "peak_rss_mb": 250.0,
+            },
+            {
+                "timestamp": "2026-01-01T10:01:00",
+                "browser": "chromium",
+                "url": "https://example.com",
+                "load_time_sec": 1.4,
+                "avg_cpu_percent": 12.0,
+                "peak_cpu_percent": 22.0,
+                "avg_rss_mb": 220.0,
+                "peak_rss_mb": 270.0,
+            },
+        ]
+        summary = build_summary(rows)
+        self.assertEqual(summary[0]["browser"], "chromium")
+        self.assertEqual(summary[0]["runs"], 2)
+        self.assertEqual(summary[0]["avg_load_time_sec"], 1.3)
 
 
 if __name__ == "__main__":
