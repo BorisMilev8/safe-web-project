@@ -1,17 +1,18 @@
-import BrowserMetricsChart from "./components/BrowserMetricsChart";
+import BrowserMetricsDashboard from "./components/BrowserMetricsDashboard";
 
 export default function App() {
   return (
     <div className="app">
       <header className="hero">
-        <h1>Safe Web Dashboard</h1>
+        <h1>Safe Web Interactive Dashboard</h1>
         <p>
-          Real browser benchmarking across lightweight, medium, and heavy
-          websites.
+          Compare browser load time, CPU usage, and memory usage across tested websites.
         </p>
       </header>
 
-      <BrowserMetricsChart />
+      <main>
+        <BrowserMetricsDashboard />
+      </main>
     </div>
   );
 }
