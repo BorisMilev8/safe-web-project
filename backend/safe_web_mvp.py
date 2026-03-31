@@ -42,7 +42,7 @@ BROWSERS: Dict[str, BrowserConfig] = {
 DEFAULT_BROWSER_ORDER = ["chrome", "firefox", "safari"]
 TRIALS_PER_BROWSER = 3
 URLS_TO_TEST = [
-    "https://example.com",
+    "https://youtube.com",
     "https://www.wikipedia.org",
     "https://www.cnn.com",
 ]
