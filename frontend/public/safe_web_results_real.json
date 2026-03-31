@@ -1,1 +1,41 @@
-
+{
+  "generated_at": "2026-03-31T12:00:00",
+  "config": {
+    "urls_tested": [
+      "https://example.com",
+      "https://www.wikipedia.org",
+      "https://news.ycombinator.com"
+    ],
+    "trials_per_browser": 3,
+    "browsers": ["chromium", "firefox", "webkit"]
+  },
+  "summary": [
+    {
+      "browser": "chromium",
+      "runs": 3,
+      "avg_load_time_sec": 1.2,
+      "avg_cpu_percent": 0.0,
+      "peak_cpu_percent": 0.0,
+      "avg_rss_mb": 0.0,
+      "peak_rss_mb": 0.0
+    },
+    {
+      "browser": "firefox",
+      "runs": 3,
+      "avg_load_time_sec": 1.5,
+      "avg_cpu_percent": 0.0,
+      "peak_cpu_percent": 0.0,
+      "avg_rss_mb": 0.0,
+      "peak_rss_mb": 0.0
+    }
+  ],
+  "results": [
+    {
+      "browser": "chromium",
+      "url": "https://example.com",
+      "trial": 1,
+      "success": true,
+      "load_time_sec": 1.1
+    }
+  ]
+}
