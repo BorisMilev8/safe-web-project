@@ -107,13 +107,7 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
 
 
 def get_headless_mode() -> bool:
-    # For real CPU/memory dashboard data, headless should usually be false.
-    # You can still override with SAFEWEB_HEADLESS=true if you really want headless.
-    env_value = os.getenv("SAFEWEB_HEADLESS")
-    if env_value is None:
-        return False
-    return env_value.strip().lower() == "true"
-
+    return True
 
 def safe_lower(value: Optional[str]) -> str:
     return (value or "").lower()
