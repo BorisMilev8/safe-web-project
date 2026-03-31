@@ -1,11 +1,11 @@
-name: Run Safe Web MVP
+name: Run Safe Web Backend
 
 on:
   push:
-  workflow_dispatch:
+    branches: [ main ]
 
 jobs:
-  run-script:
+  run-backend:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,9 +15,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          cd backend
+          python -m playwright install --with-deps
 
       - name: Run backend script
         run: |
           cd backend
-          python3 safe_web_mvp.py
+          python safe_web_mvp.py
