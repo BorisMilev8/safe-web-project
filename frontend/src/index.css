@@ -124,3 +124,17 @@ th {
   max-width: 280px;
   word-break: break-word;
 }
+button {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 10px;
+  background: #111827;
+  color: white;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button: disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
