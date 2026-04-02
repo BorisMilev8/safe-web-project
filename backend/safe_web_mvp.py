@@ -41,7 +41,7 @@ BROWSERS: Dict[str, BrowserConfig] = {
 DEFAULT_BROWSER_ORDER = ["chromium", "firefox"]
 TRIALS_PER_BROWSER = 1
 
-URLS_TO_TEST = [
+DEFAULT_URLS_TO_TEST = [
     "https://www.wikipedia.org",
     "https://www.youtube.com",
     "https://www.cnn.com",
@@ -415,7 +415,25 @@ def build_summary(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
     return sorted(summary, key=lambda x: str(x["browser"]))
 
 
-def run_all_tests_live():
+def normalize_urls(urls: Optional[List[str]] = None) -> List[str]:
+    if not urls:
+        return DEFAULT_URLS_TO_TEST
+
+    normalized: List[str] = []
+    for raw_url in urls:
+        candidate = (raw_url or "").strip()
+        if not candidate:
+            continue
+        if not candidate.startswith(("http://", "https://")):
+            candidate = f"https://{candidate}"
+        normalized.append(candidate)
+
+    return normalized or DEFAULT_URLS_TO_TEST
+
+
+def run_all_tests_live(urls: Optional[List[str]] = None):
+    urls_to_test = normalize_urls(urls)
+
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
 
