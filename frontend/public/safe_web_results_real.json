@@ -1,41 +1,99 @@
 {
-  "generated_at": "2026-03-31T12:00:00",
+  "generated_at": "2026-04-02T01:00:02",
   "config": {
-    "urls_tested": [
-      "https://wikipedia.org",
-      "https://www.cnn.com",
-      "https://news.ycombinator.com"
+    "browsers": [
+      "Google Chrome",
+      "Firefox"
     ],
-    "trials_per_browser": 3,
-    "browsers": ["chromium", "firefox", "webkit"]
+    "trials_per_browser": 1,
+    "urls_tested": [
+      "https://www.wikipedia.org",
+      "https://www.youtube.com",
+      "https://www.cnn.com"
+    ],
+    "headless": false
   },
   "summary": [
     {
-      "browser": "chromium",
+      "browser": "Firefox",
       "runs": 3,
-      "avg_load_time_sec": 1.2,
-      "avg_cpu_percent": 0.0,
-      "peak_cpu_percent": 0.0,
-      "avg_rss_mb": 0.0,
-      "peak_rss_mb": 0.0
+      "avg_load_time_sec": 2.31,
+      "avg_cpu_percent": 151.57,
+      "peak_cpu_percent": 900.74,
+      "avg_rss_mb": 461.68,
+      "peak_rss_mb": 1444.75
     },
     {
-      "browser": "firefox",
+      "browser": "Google Chrome",
       "runs": 3,
-      "avg_load_time_sec": 1.5,
-      "avg_cpu_percent": 0.0,
-      "peak_cpu_percent": 0.0,
-      "avg_rss_mb": 0.0,
-      "peak_rss_mb": 0.0
+      "avg_load_time_sec": 1.45,
+      "avg_cpu_percent": 68.68,
+      "peak_cpu_percent": 328.72,
+      "avg_rss_mb": 356.93,
+      "peak_rss_mb": 859.54
     }
   ],
   "results": [
     {
-      "browser": "chromium",
-      "url": "https://example.com",
-      "trial": 1,
-      "success": true,
-      "load_time_sec": 1.1
+      "timestamp": "2026-04-02T00:59:10",
+      "browser": "Google Chrome",
+      "url": "https://www.wikipedia.org",
+      "load_time_sec": 0.74,
+      "avg_cpu_percent": 9.56,
+      "peak_cpu_percent": 57.16,
+      "avg_rss_mb": 167.35,
+      "peak_rss_mb": 192.72
+    },
+    {
+      "timestamp": "2026-04-02T00:59:18",
+      "browser": "Google Chrome",
+      "url": "https://www.youtube.com",
+      "load_time_sec": 1.63,
+      "avg_cpu_percent": 76.88,
+      "peak_cpu_percent": 328.72,
+      "avg_rss_mb": 416.58,
+      "peak_rss_mb": 556.4
+    },
+    {
+      "timestamp": "2026-04-02T00:59:26",
+      "browser": "Google Chrome",
+      "url": "https://www.cnn.com",
+      "load_time_sec": 1.99,
+      "avg_cpu_percent": 119.61,
+      "peak_cpu_percent": 253.02,
+      "avg_rss_mb": 486.85,
+      "peak_rss_mb": 859.54
+    },
+    {
+      "timestamp": "2026-04-02T00:59:36",
+      "browser": "Firefox",
+      "url": "https://www.wikipedia.org",
+      "load_time_sec": 1.14,
+      "avg_cpu_percent": 17.94,
+      "peak_cpu_percent": 65.75,
+      "avg_rss_mb": 212.13,
+      "peak_rss_mb": 218.52
+    },
+    {
+      "timestamp": "2026-04-02T00:59:48",
+      "browser": "Firefox",
+      "url": "https://www.youtube.com",
+      "load_time_sec": 2.77,
+      "avg_cpu_percent": 46.85,
+      "peak_cpu_percent": 159.4,
+      "avg_rss_mb": 402.29,
+      "peak_rss_mb": 462.77
+    },
+    {
+      "timestamp": "2026-04-02T01:00:00",
+      "browser": "Firefox",
+      "url": "https://www.cnn.com",
+      "load_time_sec": 3.02,
+      "avg_cpu_percent": 389.91,
+      "peak_cpu_percent": 900.74,
+      "avg_rss_mb": 770.61,
+      "peak_rss_mb": 1444.75
     }
   ]
+}
 }
