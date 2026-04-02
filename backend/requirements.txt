@@ -1,5 +1,4 @@
-flask
-flask-cors
-playwright
+fastapi
+uvicorn[standard]
 psutil
-gunicorn
+playwright
