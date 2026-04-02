@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from safe_web_mvp import run_all_tests_live
 import traceback
@@ -16,7 +16,9 @@ def home():
 @app.get("/run-tests")
 def run_tests():
     try:
-        data = run_all_tests_live()
+        raw_urls = request.args.get("urls", "")
+         urls = [url for url in (piece.strip() for piece in raw_urls.split(",")) if url]
+        data = run_all_tests_live(urls=urls)
         return jsonify(data)
     except Exception as e:
         return jsonify({
