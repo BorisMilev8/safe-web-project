@@ -53,16 +53,14 @@ SAMPLE_INTERVAL_SEC = 0.25
 EXTRA_OBSERVE_SEC = 2.0
 
 
-def resolve_base_dir() -> Path:
-    return Path(__file__).resolve().parent
+from pathlib import Path
 
-
-BASE_DIR = resolve_base_dir()
+BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
-
+JSON_OUTPUT = DATA_DIR / "safe_web_results_real.json"
+CSV_OUTPUT = DATA_DIR / "safe_web_results.csv"
 CSV_HEADERS = [
     "timestamp",
     "browser",
