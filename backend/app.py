@@ -1,11 +1,16 @@
 from flask import Flask, jsonify
+from flask_cors import CORS
 from safe_web_mvp import run_all_tests_live
 
 app = Flask(__name__)
+CORS(app)
 
 @app.get("/")
 def home():
-    return jsonify({"status": "ok", "message": "Safe Web backend is running"})
+    return jsonify({
+        "status": "ok",
+        "message": "Safe Web backend is running"
+    })
 
 @app.get("/run-tests")
 def run_tests():
