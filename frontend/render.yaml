@@ -1,4 +1,5 @@
 services:
+  # 🔹 Backend (FastAPI)
   - type: web
     name: safe-web-backend
     runtime: python
@@ -11,6 +12,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
 
+  # 🔹 Frontend (React + Vite)
   - type: web
     name: safe-web-frontend
     runtime: static
