@@ -1,5 +1,4 @@
 import csv
-import json
 import os
 import threading
 import time
@@ -23,8 +22,8 @@ class BrowserConfig:
 
 
 BROWSERS: Dict[str, BrowserConfig] = {
-    "chrome": BrowserConfig(
-        key="chrome",
+    "chromium": BrowserConfig(
+        key="chromium",
         name="Chromium",
         playwright_name="chromium",
         process_name_keywords=["chrome", "chromium"],
@@ -39,7 +38,7 @@ BROWSERS: Dict[str, BrowserConfig] = {
     ),
 }
 
-DEFAULT_BROWSER_ORDER = ["chrome", "firefox"]
+DEFAULT_BROWSER_ORDER = ["chromium", "firefox"]
 TRIALS_PER_BROWSER = 1
 
 URLS_TO_TEST = [
@@ -63,7 +62,6 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 RESULTS_FILE = DATA_DIR / "safe_web_results.csv"
-FRONTEND_OUTPUT = BASE_DIR.parent / "frontend" / "public" / "safe_web_results_real.json"
 
 CSV_HEADERS = [
     "timestamp",
@@ -101,9 +99,6 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
 
 def get_headless_mode() -> bool:
     return True
-    # Local Windows/Mac: False so browser windows pop up and CPU is more realistic.
-    # CI/Linux without X server: True.
-    return os.getenv("CI", "false").lower() == "true"
 
 
 def safe_lower(value: Optional[str]) -> str:
@@ -266,7 +261,6 @@ class BrowserMetricsSampler:
             cpu_delta = total_cpu_time - self._last_total_cpu_time
 
             if wall_delta > 0:
-                # 100 = one full core saturated
                 cpu_percent = max(0.0, (cpu_delta / wall_delta) * 100.0)
             else:
                 cpu_percent = 0.0
@@ -359,7 +353,6 @@ def run_real_trial(playwright, browser_config: BrowserConfig, url: str) -> Dict[
 
         metrics = sampler.stop(extra_observe_sec=EXTRA_OBSERVE_SEC)
         print(f"Metrics for {browser_config.name} on {url}: {metrics}")
-        print(f"Observed PIDs: {sorted(sampler.seen_pids)}")
 
         try:
             context.close()
@@ -422,50 +415,6 @@ def build_summary(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
     return sorted(summary, key=lambda x: str(x["browser"]))
 
 
-def export_dashboard_json(results_file: Path = RESULTS_FILE, output_file: Path = FRONTEND_OUTPUT) -> Path:
-    rows = load_results(results_file)
-    payload = {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "config": {
-            "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
-            "trials_per_browser": TRIALS_PER_BROWSER,
-            "urls_tested": URLS_TO_TEST,
-            "headless": get_headless_mode(),
-        },
-        "summary": build_summary(rows),
-        "results": rows,
-    }
-
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with output_file.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-
-    print(f"Exported dashboard JSON -> {output_file}")
-    return output_file
-
-
-def main() -> None:
-    print("Starting Safe Web metrics run...")
-    print(f"Base dir: {BASE_DIR}")
-    print(f"Results CSV: {RESULTS_FILE}")
-    print(f"Frontend JSON: {FRONTEND_OUTPUT}")
-    print(f"Headless mode: {get_headless_mode()}")
-
-    if RESULTS_FILE.exists():
-        RESULTS_FILE.unlink()
-
-    write_csv_header_if_needed()
-
-    with sync_playwright() as playwright:
-        for key in DEFAULT_BROWSER_ORDER:
-            browser_config = BROWSERS[key]
-
-            for url in URLS_TO_TEST:
-                for trial in range(1, TRIALS_PER_BROWSER + 1):
-                    print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
-                    row = run_real_trial(playwright, browser_config, url)
-                    append_result(row)
-    
 def run_all_tests_live():
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
@@ -484,7 +433,7 @@ def run_all_tests_live():
 
     rows = load_results()
 
-    payload = {
+    return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "config": {
             "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
@@ -495,8 +444,6 @@ def run_all_tests_live():
         "summary": build_summary(rows),
         "results": rows,
     }
-
-    return payload
 
 
 if __name__ == "__main__":
