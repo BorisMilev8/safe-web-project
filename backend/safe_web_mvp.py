@@ -464,10 +464,37 @@ def main() -> None:
                     print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
                     row = run_real_trial(playwright, browser_config, url)
                     append_result(row)
+    def run_all_tests_live():
+    if RESULTS_FILE.exists():
+        RESULTS_FILE.unlink()
 
+    write_csv_header_if_needed()
+
+    with sync_playwright() as playwright:
+        for key in DEFAULT_BROWSER_ORDER:
+            browser_config = BROWSERS[key]
+
+            for url in URLS_TO_TEST:
+                for trial in range(1, TRIALS_PER_BROWSER + 1):
+                    print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
+                    row = run_real_trial(playwright, browser_config, url)
+                    append_result(row)
+
+    rows = load_results()
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "config": {
+            "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
+            "trials_per_browser": TRIALS_PER_BROWSER,
+            "urls_tested": URLS_TO_TEST,
+            "headless": get_headless_mode(),
+        },
+        "summary": build_summary(rows),
+        "results": rows,
+    }
     export_dashboard_json()
     print("\nRun complete!")
-
+  }
 
 if __name__ == "__main__":
     main()
