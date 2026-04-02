@@ -91,6 +91,13 @@ safe_web_results_real.json
 
     http://localhost:5173
 
+For hosted/public demos, point the frontend to the backend API:
+
+```bash
+VITE_API_BASE_URL+https://safe-web-project-1.onrender.com npm run build
+
+Then in the dashboard, use **Run live test URL** (for example `https://example.com`) to trigger real backend data collection instead of only static JSON.
+
 
 📈 Example Output
 Browser	Avg CPU	Peak CPU	Avg Memory	Peak Memory
