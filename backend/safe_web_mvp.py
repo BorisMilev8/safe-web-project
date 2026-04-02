@@ -443,7 +443,7 @@ def run_all_tests_live(urls: Optional[List[str]] = None):
         for key in DEFAULT_BROWSER_ORDER:
             browser_config = BROWSERS[key]
 
-            for url in URLS_TO_TEST:
+            for url in urls_to_test:
                 for trial in range(1, TRIALS_PER_BROWSER + 1):
                     print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
                     row = run_real_trial(playwright, browser_config, url)
@@ -456,13 +456,9 @@ def run_all_tests_live(urls: Optional[List[str]] = None):
         "config": {
             "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
             "trials_per_browser": TRIALS_PER_BROWSER,
-            "urls_tested": URLS_TO_TEST,
+            "urls_tested": urls_to_test,
             "headless": get_headless_mode(),
         },
         "summary": build_summary(rows),
         "results": rows,
     }
-
-
-if __name__ == "__main__":
-    main()
