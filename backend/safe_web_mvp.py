@@ -100,6 +100,7 @@ def append_result(row: Dict[str, object], results_file: Path = RESULTS_FILE) -> 
 
 
 def get_headless_mode() -> bool:
+    return True
     # Local Windows/Mac: False so browser windows pop up and CPU is more realistic.
     # CI/Linux without X server: True.
     return os.getenv("CI", "false").lower() == "true"
