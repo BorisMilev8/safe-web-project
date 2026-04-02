@@ -6,7 +6,7 @@ export default function BrowserMetricsDashboard() {
   const [selectedBrowser, setSelectedBrowser] = useState("All");
 
   useEffect(() => {
-    fetch("https://safe-web-project.onrender.com")
+    fetch("/safe_web_results_real.json")
       .then((response) => {
         if (!response.ok) {
           throw new Error("Could not load safe_web_results_real.json");
@@ -70,7 +70,6 @@ export default function BrowserMetricsDashboard() {
       <section className="card">
         <h2>Dashboard Error</h2>
         <p>{error}</p>
-        <p>Make sure frontend/public/safe_web_results_real.json exists.</p>
       </section>
     );
   }
