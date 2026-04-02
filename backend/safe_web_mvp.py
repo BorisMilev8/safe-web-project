@@ -464,7 +464,7 @@ def main() -> None:
                     print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
                     row = run_real_trial(playwright, browser_config, url)
                     append_result(row)
-    }
+    
 def run_all_tests_live():
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
