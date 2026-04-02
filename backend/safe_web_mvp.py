@@ -23,7 +23,7 @@ class BrowserConfig:
 
 
 BROWSERS: Dict[str, BrowserConfig] = {
-    "Chronium": BrowserConfig(
+    "chrome": BrowserConfig(
         key="chrome",
         name="Chromium",
         playwright_name="chromium",
