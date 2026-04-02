@@ -464,6 +464,9 @@ def main() -> None:
                     print(f"\nRunning {browser_config.name} | {url} | trial {trial}")
                     row = run_real_trial(playwright, browser_config, url)
                     append_result(row)
+    }
+if __name__ == "__main__":
+    main()
     def run_all_tests_live():
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
@@ -481,7 +484,8 @@ def main() -> None:
                     append_result(row)
 
     rows = load_results()
-    return {
+
+    payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "config": {
             "browsers": [BROWSERS[key].name for key in DEFAULT_BROWSER_ORDER],
@@ -492,9 +496,5 @@ def main() -> None:
         "summary": build_summary(rows),
         "results": rows,
     }
-    export_dashboard_json()
-    print("\nRun complete!")
-  }
 
-if __name__ == "__main__":
-    main()
+    return payload
