@@ -465,9 +465,7 @@ def main() -> None:
                     row = run_real_trial(playwright, browser_config, url)
                     append_result(row)
     }
-if __name__ == "__main__":
-    main()
-    def run_all_tests_live():
+def run_all_tests_live():
     if RESULTS_FILE.exists():
         RESULTS_FILE.unlink()
 
@@ -498,3 +496,7 @@ if __name__ == "__main__":
     }
 
     return payload
+
+
+if __name__ == "__main__":
+    main()
