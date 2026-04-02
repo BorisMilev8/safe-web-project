@@ -23,12 +23,12 @@ class BrowserConfig:
 
 
 BROWSERS: Dict[str, BrowserConfig] = {
-    "chrome": BrowserConfig(
+    "Chronium": BrowserConfig(
         key="chrome",
-        name="Google Chrome",
+        name="Chromium",
         playwright_name="chromium",
         process_name_keywords=["chrome", "chromium"],
-        launch_channel="chrome",
+        launch_channel=None,
     ),
     "firefox": BrowserConfig(
         key="firefox",
